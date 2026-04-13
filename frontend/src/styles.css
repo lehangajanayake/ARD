@@ -1,0 +1,303 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --bg: #07111f;
+  --panel: rgba(10, 20, 36, 0.82);
+  --panel-strong: rgba(12, 24, 43, 0.96);
+  --border: rgba(124, 159, 194, 0.24);
+  --text: #e8f1ff;
+  --muted: #8ea3bf;
+  --accent: #51d2ff;
+  --accent-2: #6df2b7;
+  --danger: #ff7d7d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color: var(--text);
+  background:
+    radial-gradient(circle at 20% 10%, rgba(81, 210, 255, 0.18), transparent 25%),
+    radial-gradient(circle at 80% 20%, rgba(109, 242, 183, 0.12), transparent 22%),
+    linear-gradient(180deg, #04101d 0%, #07111f 50%, #02070f 100%);
+  overflow: hidden;
+}
+
+button {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.6rem 0.95rem;
+  cursor: pointer;
+}
+
+.app-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  background: rgba(4, 10, 18, 0.38);
+}
+
+.eyebrow {
+  margin: 0 0 0.2rem;
+  text-transform: uppercase;
+  letter-spacing: 0.24em;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: clamp(1.4rem, 2vw, 2.2rem);
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.dashboard-stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+}
+
+.widget-frame {
+  position: absolute;
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  background: linear-gradient(180deg, rgba(20, 32, 54, 0.92), rgba(8, 16, 28, 0.94));
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.34);
+  overflow: hidden;
+}
+
+.widget-frame.is-fullscreen {
+  position: fixed;
+  inset: 0.8rem;
+}
+
+.widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: grab;
+  user-select: none;
+}
+
+.widget-title {
+  font-weight: 700;
+}
+
+.widget-subtitle {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 0.1rem;
+}
+
+.widget-body {
+  position: relative;
+  height: calc(100% - 3.4rem);
+  padding: 0.8rem;
+}
+
+.widget-resize-handle {
+  position: absolute;
+  right: 0.2rem;
+  bottom: 0.2rem;
+  width: 1rem;
+  height: 1rem;
+  background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.35) 50%);
+  border: 0;
+  cursor: nwse-resize;
+}
+
+.widget-panel {
+  width: 100%;
+  height: 100%;
+  border-radius: 0.95rem;
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.widget-panel-map {
+  display: flex;
+  flex-direction: column;
+}
+
+.map-viewport {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(81, 210, 255, 0.18), transparent 32%),
+    linear-gradient(180deg, #07172b 0%, #091320 60%, #040c14 100%);
+}
+
+.map-grid,
+.earth-glow,
+.flight-track {
+  position: absolute;
+  inset: 0;
+}
+
+.map-grid {
+  background-image:
+    linear-gradient(rgba(120, 180, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120, 180, 255, 0.08) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(circle at 50% 45%, black 0%, black 48%, transparent 78%);
+}
+
+.earth-glow {
+  background: radial-gradient(circle at 50% 55%, rgba(109, 242, 183, 0.12), transparent 30%);
+}
+
+.flight-track path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  filter: drop-shadow(0 0 12px rgba(81, 210, 255, 0.8));
+}
+
+.flight-track circle {
+  fill: var(--danger);
+  filter: drop-shadow(0 0 12px rgba(255, 125, 125, 0.85));
+}
+
+.map-caption,
+.chart-legend,
+.widget-hint,
+.status-row {
+  font-size: 0.88rem;
+}
+
+.map-caption,
+.chart-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0.9rem;
+  color: var(--muted);
+}
+
+.mini-chart {
+  width: 100%;
+  height: 160px;
+  display: block;
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 3;
+}
+
+.chart-line.altitude {
+  stroke: var(--accent);
+}
+
+.chart-line.velocity {
+  stroke: var(--accent-2);
+}
+
+.dot {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 999px;
+  margin-right: 0.45rem;
+}
+
+.dot.altitude {
+  background: var(--accent);
+}
+
+.dot.velocity {
+  background: var(--accent-2);
+}
+
+.widget-panel-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1rem;
+}
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.widget-hint {
+  margin-top: 0.7rem;
+  color: var(--muted);
+}
+
+.widget-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.standalone-shell .widget-frame {
+  position: absolute;
+  inset: 1rem;
+}
+
+.standalone-widget-stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  padding: 1rem;
+}
+
+.standalone-widget-card {
+  width: 100%;
+  height: 100%;
+  border-radius: 1.25rem;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(20, 32, 54, 0.92), rgba(8, 16, 28, 0.94));
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.34);
+  overflow: hidden;
+}
+
+.fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.fullscreen-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1;
+}
