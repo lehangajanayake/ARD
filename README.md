@@ -1,12 +1,22 @@
 # ARD Ground Station Dashboard
 
-Browser-based ground station dashboard for a hobby rocket club.
+Browser-based ground station dashboard for a hobby rocket club with real-time 3D rocket trajectory visualization.
+
+## Features
+
+- **3D Flight Visualization**: Real-time 3D map of Earth showing the rocket's position and flight path with altitude
+- **Draggable Widgets**: Fully flexible dashboard with drag, resize, dock, and fullscreen controls
+- **Real-time Telemetry**: WebSocket-based telemetry stream with 10 Hz updates
+- **Charts & Analytics**: Live altitude and velocity trend charts
+- **Standalone Pages**: View any widget as a dedicated full-page application
+- **Responsive Design**: Works on desktop and tablet browsers
 
 ## What is in this scaffold
 
-- React + TypeScript frontend
+- React + TypeScript frontend with a flexible widget-based dashboard
 - FastAPI backend with a realtime WebSocket telemetry stream
-- Widget-based dashboard shell with drag, resize, dock, and fullscreen behavior
+- Cesium.js for 3D Earth visualization and rocket trajectory tracking
+- Widget system with drag, resize, dock, and fullscreen behavior
 - Shared telemetry schema based on the provided `TelemetryPacket`
 
 ## Project layout
@@ -30,11 +40,16 @@ struct TelemetryPacket {
 } __attribute__((packed));
 ```
 
-The backend wraps that packet in a JSON envelope and adds derived flight values for charts and the future map track.
+The backend wraps that packet in a JSON envelope and adds derived flight values (latitude, longitude, velocity, azimuth) that are used to render the 3D rocket trajectory on the map.
 
 ## Run locally
 
-Backend:
+### Prerequisites
+
+- Node.js 18+ and npm for the frontend
+- Python 3.9+ for the backend
+
+### Backend setup
 
 ```bash
 cd backend
@@ -44,7 +59,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Frontend:
+### Frontend setup
 
 ```bash
 cd frontend
@@ -52,11 +67,19 @@ npm install
 npm run dev
 ```
 
-The frontend expects the backend at `http://localhost:8000` and `ws://localhost:8000/ws/telemetry`.
+The frontend starts on `http://localhost:5173` and expects the backend at `http://localhost:8000` (WebSocket at `ws://localhost:8000/ws/telemetry`).
+
+## How it works
+
+- **Map Widget**: Uses Cesium.js to render a 3D Earth view with the rocket's real-time position and flight trajectory in 3D space (altitude included). The map automatically tracks the rocket as it flies and displays altitude, velocity, and azimuth in the caption.
+- **Charts Widget**: Shows real-time altitude and velocity trends.
+- **Status Widget**: Displays connection state and current telemetry values.
+- **Telemetry Stream**: Backend broadcasts simulated telemetry at 10 Hz over WebSocket. Replace the simulated data in `backend/app/telemetry.py` with real hardware data when ready.
 
 ## Next steps
 
-1. Replace the placeholder flight visualization with Mapbox GL / react-map-gl.
-2. Add charting components for velocity, altitude, and sensor trends.
-3. Add server-side telemetry ingestion from radio or serial input.
-4. Add saved layouts and operator accounts later.
+1. Connect real telemetry data from radio or serial input (replace simulated data in `backend/app/telemetry.py`).
+2. Add landing zone prediction visualization overlay on the 3D map.
+3. Add data logging to a database and playback/time-scrubbing capability.
+4. Add user authentication and saved layouts for multi-operator workspaces.
+5. Integrate with flight computer APIs or sensor drivers.

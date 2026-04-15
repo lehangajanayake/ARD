@@ -45,12 +45,23 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+MAX_ALTITUDE_FEET = 11_000.0
+FEET_TO_METERS = 0.3048
+MAX_ALTITUDE_METERS = MAX_ALTITUDE_FEET * FEET_TO_METERS
+
 
 async def telemetry_loop() -> None:
     start = time.monotonic()
     while True:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         sample = build_sample(elapsed_ms)
+
+        # Restart the simulation once it reaches club max altitude.
+        if sample.packet.altitude >= MAX_ALTITUDE_METERS:
+            start = time.monotonic()
+            elapsed_ms = 0
+            sample = build_sample(elapsed_ms)
+
         await manager.broadcast(sample_to_dict(sample))
         await asyncio.sleep(0.1)
 
