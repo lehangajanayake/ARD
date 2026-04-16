@@ -10,6 +10,7 @@ export function MapWidget() {
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [viewerReady, setViewerReady] = useState(false);
   const history = useDashboardStore((state) => state.history);
   const latest = history.at(-1) ?? null;
   const historyRef = useRef(history);
@@ -29,9 +30,15 @@ export function MapWidget() {
     }
 
     try {
-      Cesium.Ion.defaultAccessToken = "";
-
       const viewer = new Cesium.Viewer(containerRef.current, {
+        baseLayer: new Cesium.ImageryLayer(
+          new Cesium.UrlTemplateImageryProvider({
+            url: "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+            credit: "© OpenStreetMap contributors © CARTO",
+            maximumLevel: 19,
+          })
+        ),
+        terrainProvider: new Cesium.EllipsoidTerrainProvider(),
         baseLayerPicker: false,
         homeButton: false,
         fullscreenButton: false,
@@ -40,15 +47,9 @@ export function MapWidget() {
         navigationHelpButton: false,
         infoBox: false,
         selectionIndicator: false,
+        animation: false,
+        timeline: false,
       });
-
-      // Set OpenStreetMap as base layer
-      viewer.imageryLayers.removeAll();
-      viewer.imageryLayers.addImageryProvider(
-        new Cesium.OpenStreetMapImageryProvider({
-          url: "https://tile.openstreetmap.org/",
-        })
-      );
 
       viewer.scene.globe.depthTestAgainstTerrain = false;
       viewer.scene.globe.enableLighting = true;
@@ -69,6 +70,7 @@ export function MapWidget() {
       viewerRef.current = viewer;
       setError(null);
       setIsLoading(false);
+      setViewerReady(true);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error("Failed to initialize Cesium viewer", err);
@@ -81,31 +83,25 @@ export function MapWidget() {
         viewerRef.current.destroy();
         viewerRef.current = null;
       }
+      setViewerReady(false);
     };
   }, []);
 
-  // Create path entity once with callback
+  // Create path entity once after viewer is initialized.
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (!viewer || viewer.isDestroyed()) return;
+    if (!viewerReady || !viewer || viewer.isDestroyed()) return;
 
     try {
       if (!pathEntityRef.current) {
         pathEntityRef.current = viewer.entities.add({
           polyline: {
-            positions: new Cesium.CallbackProperty(() => {
-              const currentHistory = historyRef.current;
-              if (currentHistory.length < 2) return [];
-              return currentHistory.map((sample) =>
-                Cesium.Cartesian3.fromDegrees(
-                  sample.derived.longitude,
-                  sample.derived.latitude,
-                  sample.packet.altitude
-                )
-              );
-            }, false),
-            width: 3,
-            material: Cesium.Color.fromCssColorString("#51d2ff").withAlpha(0.9),
+            positions: [],
+            width: 6,
+            material: new Cesium.PolylineGlowMaterialProperty({
+              color: Cesium.Color.fromCssColorString("#ff1f1f").withAlpha(0.98),
+              glowPower: 0.22,
+            }),
             clampToGround: false,
           },
         });
@@ -117,12 +113,26 @@ export function MapWidget() {
     return () => {
       // Cleanup happens in the other useEffect
     };
-  }, []);
+  }, [viewerReady]);
+
+  // Keep the path in sync with incoming telemetry samples.
+  useEffect(() => {
+    const pathEntity = pathEntityRef.current;
+    if (!viewerReady || !pathEntity || !pathEntity.polyline) return;
+
+    const positions = history
+      .filter((sample) => Number.isFinite(sample.derived.longitude) && Number.isFinite(sample.derived.latitude))
+      .map((sample) =>
+        Cesium.Cartesian3.fromDegrees(sample.derived.longitude, sample.derived.latitude, sample.packet.altitude)
+      );
+
+    pathEntity.polyline.positions = new Cesium.ConstantProperty(positions);
+  }, [history, viewerReady]);
 
   // Update rocket marker with callback
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (!viewer || viewer.isDestroyed()) return;
+    if (!viewerReady || !viewer || viewer.isDestroyed()) return;
 
     try {
       if (!rocketEntityRef.current) {
@@ -137,10 +147,11 @@ export function MapWidget() {
             );
           }, false),
           point: {
-            pixelSize: 10,
+            pixelSize: 16,
             color: Cesium.Color.fromCssColorString("#ff7d7d"),
             outlineColor: Cesium.Color.WHITE,
-            outlineWidth: 2,
+            outlineWidth: 3,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
           label: {
             text: new Cesium.CallbackProperty(() => {
@@ -150,33 +161,61 @@ export function MapWidget() {
             font: "12px sans-serif",
             fillColor: Cesium.Color.WHITE,
             pixelOffset: new Cesium.Cartesian2(0, -20),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
         });
       }
 
-      // Auto-track rocket
-      if (latest) {
-        viewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(
-            latest.derived.longitude,
-            latest.derived.latitude,
-            Math.max(500, latest.packet.altitude * 3.5)
-          ),
-          orientation: {
-            heading: Cesium.Math.toRadians(15),
-            pitch: Cesium.Math.toRadians(-45),
-          },
-          duration: 0.5,
-        });
-      }
+      // Keep camera fully user-controlled (no auto-follow).
     } catch (e) {
       console.warn("Error updating rocket marker:", e);
     }
-  }, [latest]);
+  }, [latest, viewerReady]);
+
+  const focusRocket = () => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed() || !latest) return;
+
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(
+        latest.derived.longitude,
+        latest.derived.latitude,
+        Math.max(500, latest.packet.altitude * 3.5)
+      ),
+      orientation: {
+        heading: Cesium.Math.toRadians(15),
+        pitch: Cesium.Math.toRadians(-45),
+      },
+      duration: 1.0,
+    });
+  };
 
   return (
     <div className="widget-panel widget-panel-map widget-panel-cesium">
       <div ref={containerRef} className="cesium-container" style={{ background: "#000" }} />
+      {!error ? (
+        <button
+          type="button"
+          onClick={focusRocket}
+          disabled={!latest}
+          style={{
+            position: "absolute",
+            top: "0.75rem",
+            right: "0.75rem",
+            zIndex: 2,
+            padding: "0.45rem 0.75rem",
+            borderRadius: "0.6rem",
+            border: "1px solid rgba(255, 255, 255, 0.2)",
+            background: "rgba(7, 16, 30, 0.8)",
+            color: "var(--text)",
+            fontSize: "0.8rem",
+            cursor: latest ? "pointer" : "not-allowed",
+            opacity: latest ? 1 : 0.55,
+          }}
+        >
+          Find Rocket
+        </button>
+      ) : null}
       {isLoading && !error ? (
         <div
           style={{
