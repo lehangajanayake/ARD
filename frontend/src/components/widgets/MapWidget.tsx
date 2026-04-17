@@ -29,54 +29,60 @@ export function MapWidget() {
       return;
     }
 
-    try {
-      const viewer = new Cesium.Viewer(containerRef.current, {
-        baseLayer: new Cesium.ImageryLayer(
-          new Cesium.UrlTemplateImageryProvider({
-            url: "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-            credit: "© OpenStreetMap contributors © CARTO",
-            maximumLevel: 19,
-          })
-        ),
-        terrainProvider: new Cesium.EllipsoidTerrainProvider(),
-        baseLayerPicker: false,
-        homeButton: false,
-        fullscreenButton: false,
-        vrButton: false,
-        geocoder: false,
-        navigationHelpButton: false,
-        infoBox: false,
-        selectionIndicator: false,
-        animation: false,
-        timeline: false,
-      });
+    const initViewer = () => {
+      try {
+        const terrainProvider = new Cesium.EllipsoidTerrainProvider();
 
-      viewer.scene.globe.depthTestAgainstTerrain = false;
-      viewer.scene.globe.enableLighting = true;
+        const viewer = new Cesium.Viewer(containerRef.current!, {
+          baseLayer: new Cesium.ImageryLayer(
+            new Cesium.UrlTemplateImageryProvider({
+              url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+              credit: "© Esri, DigitalGlobe, Earthstar Geographics",
+              maximumLevel: 18,
+            })
+          ),
+          terrainProvider: terrainProvider,
+          baseLayerPicker: false,
+          homeButton: false,
+          fullscreenButton: false,
+          vrButton: false,
+          geocoder: false,
+          navigationHelpButton: false,
+          infoBox: false,
+          selectionIndicator: false,
+          animation: false,
+          timeline: false,
+        });
 
-      // Initial view
-      viewer.camera.setView({
-        destination: Cesium.Cartesian3.fromDegrees(
-          DEFAULT_CENTER.longitude,
-          DEFAULT_CENTER.latitude,
-          DEFAULT_CENTER.altitude
-        ),
-        orientation: {
-          heading: Cesium.Math.toRadians(0),
-          pitch: Cesium.Math.toRadians(-45),
-        },
-      });
+        viewer.scene.globe.depthTestAgainstTerrain = false;
+        viewer.scene.globe.enableLighting = true;
 
-      viewerRef.current = viewer;
-      setError(null);
-      setIsLoading(false);
-      setViewerReady(true);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error("Failed to initialize Cesium viewer", err);
-      setError(errorMsg);
-      setIsLoading(false);
-    }
+        // Initial view
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(
+            DEFAULT_CENTER.longitude,
+            DEFAULT_CENTER.latitude,
+            DEFAULT_CENTER.altitude
+          ),
+          orientation: {
+            heading: Cesium.Math.toRadians(0),
+            pitch: Cesium.Math.toRadians(-45),
+          },
+        });
+
+        viewerRef.current = viewer;
+        setError(null);
+        setIsLoading(false);
+        setViewerReady(true);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error("Failed to initialize Cesium viewer", err);
+        setError(errorMsg);
+        setIsLoading(false);
+      }
+    };
+
+    initViewer();
 
     return () => {
       if (viewerRef.current && !viewerRef.current.isDestroyed()) {
@@ -97,11 +103,8 @@ export function MapWidget() {
         pathEntityRef.current = viewer.entities.add({
           polyline: {
             positions: [],
-            width: 6,
-            material: new Cesium.PolylineGlowMaterialProperty({
-              color: Cesium.Color.fromCssColorString("#ff1f1f").withAlpha(0.98),
-              glowPower: 0.22,
-            }),
+            width: 5,
+            material: Cesium.Color.fromCssColorString("#ff0000").withAlpha(0.95),
             clampToGround: false,
           },
         });
@@ -115,19 +118,19 @@ export function MapWidget() {
     };
   }, [viewerReady]);
 
-  // Keep the path in sync with incoming telemetry samples.
+  // Keep the path in sync with incoming telemetry samples using CallbackProperty to prevent flickering.
   useEffect(() => {
     const pathEntity = pathEntityRef.current;
     if (!viewerReady || !pathEntity || !pathEntity.polyline) return;
 
-    const positions = history
-      .filter((sample) => Number.isFinite(sample.derived.longitude) && Number.isFinite(sample.derived.latitude))
-      .map((sample) =>
-        Cesium.Cartesian3.fromDegrees(sample.derived.longitude, sample.derived.latitude, sample.packet.altitude)
-      );
-
-    pathEntity.polyline.positions = new Cesium.ConstantProperty(positions);
-  }, [history, viewerReady]);
+    pathEntity.polyline.positions = new Cesium.CallbackProperty(() => {
+      return historyRef.current
+        .filter((sample) => Number.isFinite(sample.derived.longitude) && Number.isFinite(sample.derived.latitude))
+        .map((sample) =>
+          Cesium.Cartesian3.fromDegrees(sample.derived.longitude, sample.derived.latitude, sample.packet.altitude)
+        );
+    }, false);
+  }, [viewerReady]);
 
   // Update rocket marker with callback
   useEffect(() => {
@@ -176,15 +179,32 @@ export function MapWidget() {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed() || !latest) return;
 
+    const rocketPosition = Cesium.Cartesian3.fromDegrees(
+      latest.derived.longitude,
+      latest.derived.latitude,
+      latest.packet.altitude
+    );
+
+    const heading = Cesium.Math.toRadians(latest.derived.azimuth_deg);
+    const chaseDistance = Math.max(120, Math.min(450, latest.packet.altitude * 0.12));
+    const chaseHeight = Math.max(40, Math.min(180, latest.packet.altitude * 0.05));
+
+    // Local ENU offset for a third-person camera: behind rocket + slightly above.
+    const forwardEast = Math.sin(heading);
+    const forwardNorth = Math.cos(heading);
+    const offsetEast = -forwardEast * chaseDistance;
+    const offsetNorth = -forwardNorth * chaseDistance;
+    const localOffset = new Cesium.Cartesian3(offsetEast, offsetNorth, chaseHeight);
+
+    const enuFrame = Cesium.Transforms.eastNorthUpToFixedFrame(rocketPosition);
+    const cameraDestination = Cesium.Matrix4.multiplyByPoint(enuFrame, localOffset, new Cesium.Cartesian3());
+
     viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(
-        latest.derived.longitude,
-        latest.derived.latitude,
-        Math.max(500, latest.packet.altitude * 3.5)
-      ),
+      destination: cameraDestination,
       orientation: {
-        heading: Cesium.Math.toRadians(15),
-        pitch: Cesium.Math.toRadians(-45),
+        heading,
+        pitch: Cesium.Math.toRadians(-18),
+        roll: 0,
       },
       duration: 1.0,
     });
@@ -192,7 +212,7 @@ export function MapWidget() {
 
   return (
     <div className="widget-panel widget-panel-map widget-panel-cesium">
-      <div ref={containerRef} className="cesium-container" style={{ background: "#000" }} />
+      <div ref={containerRef} className="cesium-container" style={{ background: "#dfe8f2" }} />
       {!error ? (
         <button
           type="button"
@@ -248,11 +268,28 @@ export function MapWidget() {
           <p style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Check the browser console for details.</p>
         </div>
       ) : null}
-      <div className="map-caption">
-        <span>Alt {latest ? `${latest.packet.altitude.toFixed(0)} m` : "--"}</span>
-        <span>Vel {latest ? `${latest.derived.velocity.toFixed(1)} m/s` : "--"}</span>
-        <span>Az {latest ? `${latest.derived.azimuth_deg.toFixed(1)}°` : "--"}</span>
-      </div>
+      {latest && (
+        <div className="map-caption">
+          <span>Time {latest.packet.time} ms</span>
+          <span>
+            Phase{" "}
+            {latest.packet.time <= 800
+              ? "PAD"
+              : latest.packet.time <= 6300
+                ? "BOOST"
+                : latest.packet.time <= 28000
+                  ? "COAST"
+                  : latest.packet.time <= 42000
+                    ? "APOGEE"
+                    : latest.packet.time <= 78000
+                      ? "DESCENT"
+                      : "LANDED"}
+          </span>
+          <span>Alt {latest.packet.altitude.toFixed(0)} m</span>
+          <span>Vel {latest.derived.velocity.toFixed(1)} m/s</span>
+          <span>Az {latest.derived.azimuth_deg.toFixed(1)}°</span>
+        </div>
+      )}
     </div>
   );
 }

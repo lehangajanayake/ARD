@@ -30,9 +30,13 @@ export function useTelemetrySocket() {
           const parsed = JSON.parse(event.data as string);
           const telemetry = normalizeTelemetryMessage(parsed);
           if (telemetry) {
+            console.log("✓ Telemetry received:", telemetry.packet.time, "ms, alt:", telemetry.packet.altitude, "m, vel:", telemetry.derived.velocity, "m/s");
             dashboardActions.pushTelemetry(telemetry);
+          } else {
+            console.warn("✗ Failed to normalize telemetry:", parsed);
           }
-        } catch {
+        } catch (err) {
+          console.error("✗ Telemetry parse error:", err);
           dashboardActions.setConnectionState("error");
         }
       };

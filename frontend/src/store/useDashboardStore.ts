@@ -26,7 +26,7 @@ type DashboardState = {
 type DashboardListener = () => void;
 
 const defaultWidgets: WidgetLayout[] = [
-  { id: "map", kind: "map", title: "Flight Map", x: 24, y: 24, width: 680, height: 520, docked: true, fullScreen: false },
+  { id: "map", kind: "map", title: "Flight Map", x: 24, y: 24, width: 680, height: 520, docked: true, fullScreen: true },
   { id: "chart", kind: "chart", title: "Velocity & Altitude", x: 728, y: 24, width: 420, height: 260, docked: true, fullScreen: false },
   { id: "status", kind: "status", title: "Telemetry Status", x: 728, y: 308, width: 420, height: 236, docked: true, fullScreen: false },
 ];
