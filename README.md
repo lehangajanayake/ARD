@@ -42,6 +42,32 @@ struct TelemetryPacket {
 
 The backend wraps that packet in a JSON envelope and adds derived flight values (latitude, longitude, velocity, azimuth) that are used to render the 3D rocket trajectory on the map.
 
+## Telemetry data pipeline
+
+The graph below shows how telemetry moves from an off-the-shelf ground station into the browser dashboard.
+
+```mermaid
+flowchart LR
+  A[Flight Computer Sensors<br/>barometer, IMU, GPS] --> B[Off-the-shelf Ground Station<br/>radio + serial/USB output]
+  B --> C[Python Ingest Layer<br/>backend/app/telemetry.py<br/>parse bytes + validate packet]
+  C --> D[Telemetry Normalization<br/>TelemetryPacket + derived values<br/>lat/lon, velocity, azimuth]
+  D --> E[FastAPI Broadcaster<br/>backend/app/main.py]
+  E -->|ws://localhost:8000/ws/telemetry| F[WebSocket Clients<br/>frontend/src/hooks/useTelemetrySocket.ts]
+  F --> G[Dashboard Store<br/>frontend/src/store/useDashboardStore.ts]
+  G --> H1[Map Widget<br/>3D trajectory in Cesium]
+  G --> H2[Telemetry Chart Widget<br/>altitude/velocity trends]
+  G --> H3[Status Widget<br/>connection + live values]
+```
+
+### Pipeline stages
+
+1. Ground-station output is read by the Python backend from a transport like serial, USB, or radio bridge.
+2. The ingest layer decodes raw bytes into the telemetry packet and rejects malformed frames.
+3. The backend enriches each packet with derived flight values needed by the UI.
+4. FastAPI pushes packets to connected clients over a WebSocket stream at telemetry rate.
+5. The frontend WebSocket hook receives each message and updates shared dashboard state.
+6. Widgets subscribe to store updates and render map, charts, and status in real time.
+
 ## Run locally
 
 ### Prerequisites
