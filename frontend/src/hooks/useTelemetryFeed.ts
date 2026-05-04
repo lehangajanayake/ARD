@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
 import { dashboardActions, useDashboardStore } from "../store/useDashboardStore";
 import { normalizeTelemetryMessage } from "../lib/telemetry";
+import { io, Socket } from "socket.io-client";
 import type { TelemetrySample } from "../types/telemetry";
 
-const SOCKET_URL = import.meta.env.VITE_TELEMETRY_WS_URL ?? "ws://localhost:8000/ws/telemetry";
+const SOCKET_URL = import.meta.env.VITE_TELEMETRY_WS_URL ?? "http://localhost:5000";
 
 function createDemoSample(index: number, startTimeMs: number): TelemetrySample {
   const elapsedSeconds = (index * 250) / 1000;
@@ -57,8 +58,7 @@ export function useTelemetryFeed() {
 
   useEffect(() => {
     let active = true;
-    let socket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
+    let socket: Socket | null = null;
     let demoTimer: number | null = null;
     let demoIndex = 0;
     const demoStartTime = Date.now();
@@ -93,52 +93,56 @@ export function useTelemetryFeed() {
       }
 
       dashboardActions.setConnectionState("connecting");
-      socket = new WebSocket(SOCKET_URL);
+      socket = io(SOCKET_URL, {
+        reconnection: true,
+        reconnectionDelay: 500,
+        reconnectionDelayMax: 10_000,
+        reconnectionAttempts: Infinity,
+        transports: ["websocket", "polling"],
+      });
 
-      socket.onopen = () => {
+      socket.on("connect", () => {
         retryRef.current = 0;
         dashboardActions.setConnectionState("connected");
-      };
+        console.log("✓ Socket.IO connected to telemetry backend");
+      });
 
-      socket.onmessage = (event) => {
+      socket.on("telemetry_data", (data) => {
         try {
-          const parsed = JSON.parse(event.data as string);
-          const telemetry = normalizeTelemetryMessage(parsed);
+          const telemetry = normalizeTelemetryMessage(data);
           if (telemetry) {
             dashboardActions.pushTelemetry(telemetry);
           } else {
-            console.warn("✗ Failed to normalize telemetry:", parsed);
+            console.warn("✗ Failed to normalize telemetry:", data);
           }
         } catch (err) {
           console.error("✗ Telemetry parse error:", err);
           dashboardActions.setConnectionState("error");
         }
-      };
+      });
 
-      socket.onerror = () => {
+      socket.on("connect_error", () => {
         dashboardActions.setConnectionState("error");
-      };
+      });
 
-      socket.onclose = () => {
+      socket.on("disconnect", () => {
         if (!active) {
           return;
         }
 
         dashboardActions.setConnectionState("disconnected");
-        retryRef.current += 1;
-        const delay = Math.min(10_000, 500 * 2 ** retryRef.current);
-        reconnectTimer = window.setTimeout(connect, delay);
-      };
+        console.log("✗ Socket.IO disconnected from telemetry backend");
+      });
     };
 
     connect();
 
     return () => {
       active = false;
-      if (reconnectTimer) {
-        window.clearTimeout(reconnectTimer);
+      if (demoTimer) {
+        window.clearInterval(demoTimer);
       }
-      socket?.close();
+      socket?.disconnect();
     };
   }, [telemetrySource]);
 }

@@ -1,104 +1,189 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import json
 import time
-from contextlib import asynccontextmanager
-from typing import Any
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
+from .pipeline.serial_source import SerialSource
+from .pipeline.telemetry_pipeline import TelemetryPipeline
+from .pipeline.recorder import TelemetryRecorder
 
-from .telemetry import build_sample, sample_to_dict
+app = Flask(__name__)
+CORS(app, origins=["http://127.0.0.1:5173", "*"], supports_credentials=True)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
+serial_source = SerialSource(baudrate=115200)
+pipeline = TelemetryPipeline(recorder=TelemetryRecorder("flight_log.csv"))
 
-class ConnectionManager:
-    def __init__(self) -> None:
-        self._connections: set[WebSocket] = set()
-        self._lock = asyncio.Lock()
-
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        async with self._lock:
-            self._connections.add(websocket)
-
-    async def disconnect(self, websocket: WebSocket) -> None:
-        async with self._lock:
-            self._connections.discard(websocket)
-
-    async def broadcast(self, payload: dict[str, Any]) -> None:
-        message = json.dumps(payload)
-        async with self._lock:
-            connections = list(self._connections)
-        stale: list[WebSocket] = []
-        for connection in connections:
-            try:
-                await connection.send_text(message)
-            except Exception:
-                stale.append(connection)
-        if stale:
-            async with self._lock:
-                for connection in stale:
-                    self._connections.discard(connection)
+stream_task = None
+_simulation_enabled = True  # Enable simulated telemetry when no real data
 
 
-manager = ConnectionManager()
-
-MAX_ALTITUDE_FEET = 11_000.0
-FEET_TO_METERS = 0.3048
-MAX_ALTITUDE_METERS = MAX_ALTITUDE_FEET * FEET_TO_METERS
+@app.route("/ports", methods=["GET"])
+def get_serial_ports():
+    return jsonify({"success": True, "ports": serial_source.list_ports()})
 
 
-async def telemetry_loop() -> None:
-    start = time.monotonic()
-    while True:
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        sample = build_sample(elapsed_ms)
+@app.route("/set_port", methods=["POST"])
+def set_serial_port():
+    port = request.json.get("port")
+    if not port:
+        return jsonify({"success": False, "error": "No port specified"}), 400
 
-        # Restart the simulation once it reaches club max altitude.
-        if sample.packet.altitude >= MAX_ALTITUDE_METERS:
-            start = time.monotonic()
-            elapsed_ms = 0
+    serial_source.set_port(port)
+    return jsonify({"success": True, "message": f"Serial port {port} has been set"})
+
+
+@app.route("/open_port", methods=["POST"])
+def open_serial_port():
+    global stream_task, _simulation_enabled
+
+    try:
+        serial_source.open()
+        _simulation_enabled = False
+        
+        if stream_task is None:
+            stream_task = socketio.start_background_task(stream_serial_to_pipeline)
+
+        socketio.emit("port_opened", {"port": serial_source.port_name})
+        return jsonify({"success": True, "message": f"Serial port {serial_source.port_name} opened"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/stop_port", methods=["POST"])
+def stop_serial_port():
+    global _simulation_enabled
+    try:
+        serial_source.close()
+        _simulation_enabled = True
+        return jsonify({"success": True, "message": "Serial port closed"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/telemetry/latest", methods=["GET"])
+def latest_telemetry():
+    return jsonify({"success": True, "data": pipeline.latest()})
+
+
+@app.route("/telemetry/history", methods=["GET"])
+def telemetry_history():
+    return jsonify({"success": True, "data": pipeline.history()})
+
+
+@app.route("/telemetry/stats", methods=["GET"])
+def telemetry_stats():
+    return jsonify({"success": True, "data": pipeline.stats()})
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
+
+
+@socketio.on("connect")
+def handle_connect():
+    global stream_task
+    print(f"Client connected")
+    
+    if stream_task is None:
+        stream_task = socketio.start_background_task(stream_telemetry)
+
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    print(f"Client disconnected")
+
+
+@socketio.on("request_telemetry")
+def request_telemetry():
+    # Send buffered data immediately so the dashboard is not empty after refresh.
+    for row in pipeline.history()[-100:]:
+        emit("telemetry_data", row)
+
+    emit("pipeline_stats", pipeline.stats())
+
+
+def stream_serial_to_pipeline():
+    """
+    Background loop for real serial data:
+    serial line -> parse -> validate/interference check -> log -> socket emit
+    """
+    for line in serial_source.lines():
+        row = pipeline.process_line(line)
+        if row is not None:
+            socketio.emit("telemetry_data", row)
+            socketio.emit("pipeline_stats", pipeline.stats())
+
+        socketio.sleep(0.001)
+
+
+def stream_simulated_telemetry():
+    """
+    Generate simulated telemetry for testing/demo purposes
+    """
+    from .telemetry import build_sample, sample_to_dict
+    
+    start = time.time()
+    MAX_ALTITUDE_FEET = 11_000.0
+    FEET_TO_METERS = 0.3048
+    MAX_ALTITUDE_METERS = MAX_ALTITUDE_FEET * FEET_TO_METERS
+    
+    while _simulation_enabled:
+        try:
+            elapsed_ms = int((time.time() - start) * 1000)
             sample = build_sample(elapsed_ms)
-
-        await manager.broadcast(sample_to_dict(sample))
-        await asyncio.sleep(0.1)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    task = asyncio.create_task(telemetry_loop())
-    try:
-        yield
-    finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+            
+            # Restart simulation at max altitude
+            if sample.packet.altitude >= MAX_ALTITUDE_METERS:
+                start = time.time()
+                elapsed_ms = 0
+                sample = build_sample(elapsed_ms)
+            
+            socketio.emit("telemetry_data", sample_to_dict(sample))
+            socketio.sleep(0.1)
+        except Exception as e:
+            print(f"Error in simulated telemetry: {e}")
+            socketio.sleep(0.5)
 
 
-app = FastAPI(title="ARD Ground Station API", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def stream_telemetry():
+    """
+    Main telemetry stream - uses real data or falls back to simulation
+    """
+    from .telemetry import build_sample, sample_to_dict
+    
+    start = time.time()
+    MAX_ALTITUDE_FEET = 11_000.0
+    FEET_TO_METERS = 0.3048
+    MAX_ALTITUDE_METERS = MAX_ALTITUDE_FEET * FEET_TO_METERS
+    
+    while True:
+        if _simulation_enabled:
+            try:
+                elapsed_ms = int((time.time() - start) * 1000)
+                sample = build_sample(elapsed_ms)
+                
+                # Restart simulation at max altitude
+                if sample.packet.altitude >= MAX_ALTITUDE_METERS:
+                    start = time.time()
+                    elapsed_ms = 0
+                    sample = build_sample(elapsed_ms)
+                
+                socketio.emit("telemetry_data", sample_to_dict(sample))
+                socketio.sleep(0.1)
+            except Exception as e:
+                print(f"Error in simulated telemetry: {e}")
+                socketio.sleep(0.5)
+        else:
+            # Real serial data stream
+            socketio.sleep(0.01)
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+if __name__ == "__main__":
+    socketio.run(app, debug=True, host="127.0.0.1", port=5000)
 
 
-@app.websocket("/ws/telemetry")
-async def telemetry_websocket(websocket: WebSocket) -> None:
-    await manager.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await manager.disconnect(websocket)
-    except Exception:
-        await manager.disconnect(websocket)
+
