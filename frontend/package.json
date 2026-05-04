@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "cesium": "^1.140.0",
+    "mapbox-gl": "^3.23.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.2"
@@ -19,7 +19,6 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.3",
-    "vite": "^6.1.0",
-    "vite-plugin-cesium": "^1.2.23"
+    "vite": "^6.1.0"
   }
 }

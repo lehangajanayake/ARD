@@ -47,7 +47,7 @@ The backend wraps that packet in a JSON envelope and adds derived flight values 
 The graph below shows how telemetry moves from an off-the-shelf ground station into the browser dashboard.
 
 ```mermaid
-flowchart LR
+flowchart TD
   A[Flight Computer Sensors<br/>barometer, IMU, GPS] --> B[Off-the-shelf Ground Station<br/>radio + serial/USB output]
   B --> C[Python Ingest Layer<br/>backend/app/telemetry.py<br/>parse bytes + validate packet]
   C --> D[Telemetry Normalization<br/>TelemetryPacket + derived values<br/>lat/lon, velocity, azimuth]
