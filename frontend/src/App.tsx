@@ -7,6 +7,7 @@ import { MapWidget } from "./components/widgets/MapWidget";
 import { TelemetryChartWidget } from "./components/widgets/TelemetryChartWidget";
 import { StatusWidget } from "./components/widgets/StatusWidget";
 import { TelemetryPlaybackControls } from "./components/TelemetryPlaybackControls";
+import { ModelDebugViewer } from "./components/ModelDebugViewer";
 
 function FullScreenWidget() {
   const widgets = useDashboardStore((state) => state.widgets);
@@ -112,6 +113,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<DashboardPage />} />
       <Route path="/widget/:widgetId" element={<StandaloneWidgetPage />} />
+      <Route path="/debug/model" element={<ModelDebugViewer />} />
       <Route path="*" element={<DashboardPage />} />
     </Routes>
   );

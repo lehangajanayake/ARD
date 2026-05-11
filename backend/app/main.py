@@ -18,6 +18,7 @@ pipeline = TelemetryPipeline(recorder=TelemetryRecorder("flight_log.csv"))
 
 stream_task = None
 _simulation_enabled = True  # Enable simulated telemetry when no real data
+_simulation_start_time = time.time()  # Track when simulation started
 
 
 @app.route("/ports", methods=["GET"])
@@ -83,6 +84,14 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/telemetry/restart", methods=["POST"])
+def restart_simulation():
+    """Restart the simulation from the beginning"""
+    global _simulation_start_time
+    _simulation_start_time = time.time()
+    return jsonify({"success": True, "message": "Simulation restarted"})
+
+
 @socketio.on("connect")
 def handle_connect():
     global stream_task
@@ -104,6 +113,14 @@ def request_telemetry():
         emit("telemetry_data", row)
 
     emit("pipeline_stats", pipeline.stats())
+
+
+@socketio.on("restart_simulation")
+def handle_restart_simulation():
+    """Socket.IO handler to restart simulation from client"""
+    global _simulation_start_time
+    _simulation_start_time = time.time()
+    emit("simulation_restarted", {"success": True}, broadcast=True)
 
 
 def stream_serial_to_pipeline():
@@ -153,9 +170,9 @@ def stream_telemetry():
     """
     Main telemetry stream - uses real data or falls back to simulation
     """
+    global _simulation_start_time
     from .telemetry import build_sample, sample_to_dict
     
-    start = time.time()
     MAX_ALTITUDE_FEET = 11_000.0
     FEET_TO_METERS = 0.3048
     MAX_ALTITUDE_METERS = MAX_ALTITUDE_FEET * FEET_TO_METERS
@@ -163,12 +180,12 @@ def stream_telemetry():
     while True:
         if _simulation_enabled:
             try:
-                elapsed_ms = int((time.time() - start) * 1000)
+                elapsed_ms = int((time.time() - _simulation_start_time) * 1000)
                 sample = build_sample(elapsed_ms)
                 
                 # Restart simulation at max altitude
                 if sample.packet.altitude >= MAX_ALTITUDE_METERS:
-                    start = time.time()
+                    _simulation_start_time = time.time()
                     elapsed_ms = 0
                     sample = build_sample(elapsed_ms)
                 

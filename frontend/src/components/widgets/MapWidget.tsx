@@ -54,9 +54,9 @@ function buildFlightPathGeoJSON(history: TelemetrySample[]) {
 export function MapWidget() {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
-  const markerRef = useRef<mapboxgl.Marker | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [modelScale, setModelScale] = useState(10000);
 
   const history = useDashboardStore((state) => state.history);
   const latest = history.at(-1) ?? null;
@@ -106,62 +106,78 @@ export function MapWidget() {
           map.addSource("flight-path", {
             type: "geojson",
             lineMetrics: true,
-            data: buildFlightPathGeoJSON([]),
+            data: buildFlightPathGeoJSON([]) as any,
           });
 
           map.addLayer({
             id: "flight-path-line",
             type: "line",
             source: "flight-path",
+            minzoom: 0,
             layout: {
               "line-join": "round",
               "line-cap": "round",
               "line-elevation-reference": "ground",
-              "line-width-unit": "meters",
               "line-z-offset": ["interpolate", ["linear"], ["line-progress"], 0, ["get", "startZ"], 1, ["get", "endZ"]] as any,
+              "visibility": "visible",
             },
             paint: {
               "line-color": "#ff2a2a",
-              "line-width": 12,
+              "line-width": ["interpolate", ["linear"], ["zoom"], 0, 4, 6, 8, 12, 16, 22, 32],
               "line-opacity": 0.98,
               "line-emissive-strength": 1,
             },
           });
         }
 
-        // Create a marker for the rocket (with pulsing inner)
-        const el = document.createElement("div");
-        el.className = "rocket-marker";
-        el.style.width = "22px";
-        el.style.height = "22px";
-        el.style.display = "flex";
-        el.style.alignItems = "center";
-        el.style.justifyContent = "center";
+        // Create a GeoJSON source for the rocket 3D model
+        if (!map.getSource("rocket-model")) {
+          map.addSource("rocket-model", {
+            type: "geojson",
+            data: {
+              type: "FeatureCollection",
+              features: [
+                {
+                  type: "Feature",
+                  geometry: {
+                    type: "Point",
+                    coordinates: [DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude],
+                  },
+                  properties: {},
+                },
+              ],
+            },
+          });
 
-        const dot = document.createElement("div");
-        dot.style.width = "12px";
-        dot.style.height = "12px";
-        dot.style.borderRadius = "50%";
-        dot.style.background = "#ff7d7d";
-        dot.style.border = "2px solid white";
-        dot.style.boxSizing = "border-box";
-        dot.style.boxShadow = "0 0 6px rgba(0,0,0,0.4)";
-        dot.style.position = "relative";
+        // Create and add rocket position marker
+        try {
+          if (!map.hasModel("rocket-model")) {
+            map.addModel("rocket-model", "/models/rocket.glb");
+          }
 
-        const pulse = document.createElement("div");
-        pulse.style.position = "absolute";
-        pulse.style.left = "50%";
-        pulse.style.top = "50%";
-        pulse.style.transform = "translate(-50%, -50%)";
-        pulse.style.width = "12px";
-        pulse.style.height = "12px";
-        pulse.style.borderRadius = "50%";
-        pulse.style.background = "rgba(255,125,125,0.4)";
-        pulse.style.zIndex = "-1";
-        pulse.style.animation = "map-pulse 1.6s infinite";
-
-        el.appendChild(pulse);
-        el.appendChild(dot);
+          // 2. The corrected 3D Layer
+          map.addLayer({
+            id: "rocket-3d-layer",
+            type: "model",          // <--- This must be 'model', not 'circle'
+            source: "rocket-model", // The GeoJSON source containing your [lon, lat, alt]
+            minzoom: 0,
+            layout: {
+              // 'model-id' tells Mapbox which loaded 3D asset to use
+              "model-id": "rocket-model", 
+              
+              // Optional: Sync the rocket's yaw with your telemetry heading
+              "model-rotation": [0, 0, ["get", "heading"]], 
+              
+              // Optional: Scale the model up or down if it imports too small
+              "model-scale": [modelScale, modelScale, modelScale],
+              "visibility": "visible"
+            }
+          }as mapboxgl.LayerSpecification);
+          console.log("✅ Rocket marker layer added successfully");
+        } catch (e) {
+          console.error("❌ Failed to add marker layer:", e);
+        }
+        }
 
         // ensure keyframes exist
         if (!document.getElementById("mapbox-pulse-style")) {
@@ -170,9 +186,6 @@ export function MapWidget() {
           style.innerHTML = `@keyframes map-pulse { 0% { transform: translate(-50%,-50%) scale(0.7); opacity: 0.9 } 70% { transform: translate(-50%,-50%) scale(1.8); opacity: 0 } 100% { opacity: 0 } }`;
           document.head.appendChild(style);
         }
-
-        const marker = new mapboxgl.Marker(el).setLngLat([DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude]).addTo(map);
-        markerRef.current = marker;
 
         mapRef.current = map;
         setError(null);
@@ -190,10 +203,6 @@ export function MapWidget() {
     }
 
     return () => {
-      if (markerRef.current) {
-        markerRef.current.remove();
-        markerRef.current = null;
-      }
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
@@ -209,7 +218,7 @@ export function MapWidget() {
     try {
       const source = map.getSource("flight-path") as mapboxgl.GeoJSONSource | undefined;
       if (source) {
-        source.setData(buildFlightPathGeoJSON(historyRef.current));
+        source.setData(buildFlightPathGeoJSON(historyRef.current) as any);
       }
     } catch (e) {
       console.warn("Failed to update flight path", e);
@@ -227,27 +236,42 @@ export function MapWidget() {
   // Update rocket marker when latest changes
   useEffect(() => {
     const map = mapRef.current;
-    const marker = markerRef.current;
-    if (!map || !marker) return;
+    if (!map) return;
 
     try {
       if (!latest) return;
       const lon = latest.derived.longitude;
       const lat = latest.derived.latitude;
+      const altitude = latest.packet.altitude;
+      const heading = Number.isFinite(latest.derived.azimuth_deg) ? latest.derived.azimuth_deg : 0;
 
-      marker.setLngLat([lon, lat]);
+      // Update GeoJSON source for the marker
+      const source = map.getSource("rocket-model") as mapboxgl.GeoJSONSource | undefined;
+      if (source) {
+        source.setData({
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: {
+                type: "Point",
+                coordinates: [lon, lat, altitude],
+              },
+              properties: {
+                heading: heading,
+              },
+            },
+          ],
+        });
+      }
 
-      // Optionally update a small popup with altitude
-      const altitude = latest.packet.altitude != null ? `${latest.packet.altitude.toFixed(0)}m` : "--";
-      // Use a title attribute for simple hover tooltip
-      const el = marker.getElement();
-      el.setAttribute("title", altitude);
+      map.triggerRepaint();
+
       // If auto-follow enabled, smoothly fly to the rocket
       if (autoFollow) {
-        const heading = Number.isFinite(latest.derived.azimuth_deg) ? latest.derived.azimuth_deg : 0;
         map.flyTo({
           center: [lon, lat],
-          zoom: computeRocketZoom(latest.packet.altitude),
+          zoom: computeRocketZoom(altitude),
           bearing: heading,
           pitch: 62,
           speed: 0.9,
@@ -255,9 +279,22 @@ export function MapWidget() {
         });
       }
     } catch (e) {
-      console.warn("Failed to update rocket marker", e);
+      console.warn("Failed to update rocket 3D model", e);
     }
   }, [latest, autoFollow]);
+
+  // Update model scale separately
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getLayer("rocket-3d-layer")) return;
+
+    try {
+      map.setLayoutProperty("rocket-3d-layer", "model-scale", [modelScale, modelScale, modelScale]);
+      map.triggerRepaint();
+    } catch (e) {
+      console.warn("Failed to update model scale", e);
+    }
+  }, [modelScale]);
 
   const focusRocket = () => {
     const map = mapRef.current;
@@ -383,6 +420,39 @@ export function MapWidget() {
           <span>Az {latest.derived.azimuth_deg.toFixed(1)}°</span>
         </div>
       )}
+
+      <div
+        style={{
+          position: "absolute",
+          right: "0.75rem",
+          bottom: "0.75rem",
+          zIndex: 3,
+          width: "min(18rem, calc(100% - 1.5rem))",
+          padding: "1rem",
+          borderRadius: "1rem",
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(6, 12, 24, 0.84)",
+          backdropFilter: "blur(10px)",
+          color: "var(--text)",
+        }}
+      >
+        <div style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--muted)", marginBottom: "0.35rem" }}>
+          Model Scale Controls
+        </div>
+        <div style={{ fontSize: "0.85rem", marginBottom: "0.45rem" }}>Scale: {modelScale.toFixed(0)}x</div>
+        <input
+          type="range"
+          min="1000"
+          max="50000"
+          step="1000"
+          value={modelScale}
+          onChange={(e) => setModelScale(parseInt(e.target.value, 10))}
+          style={{ width: "100%" }}
+        />
+        <div style={{ marginTop: "0.6rem", fontSize: "0.75rem", color: "var(--muted)" }}>
+          Adjust rocket model visibility
+        </div>
+      </div>
     </div>
   );
 }
