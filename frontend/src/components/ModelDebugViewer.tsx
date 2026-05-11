@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { color } from "three/src/nodes/tsl/TSLCore";
 
 const DEFAULT_POSITION = { lon: -117.0, lat: 35.0, alt: 1000, heading: 0 };
 
