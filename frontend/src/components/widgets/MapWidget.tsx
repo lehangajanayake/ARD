@@ -1,219 +1,329 @@
 import { useEffect, useRef, useState } from "react";
-import * as Cesium from "cesium";
+import mapboxgl from "mapbox-gl";
+import "mapbox-gl/dist/mapbox-gl.css";
 import { useDashboardStore } from "../../store/useDashboardStore";
-import "cesium/Build/Cesium/Widgets/widgets.css";
+import type { TelemetrySample } from "../../types/telemetry";
 
-const DEFAULT_CENTER = { latitude: 35.0, longitude: -117.0, altitude: 150000 };
+const DEFAULT_CENTER = { latitude: 35.0, longitude: -117.0, zoom: 6 };
+
+function scaleTrailAltitude(altitudeMeters: number) {
+  return Math.max(8, altitudeMeters * 0.85);
+}
+
+function buildFlightPathGeoJSON(history: TelemetrySample[]) {
+  const features: Array<{
+    type: "Feature";
+    properties: { startZ: number; endZ: number };
+    geometry: { type: "LineString"; coordinates: [number, number][] };
+  }> = [];
+
+  for (let index = 1; index < history.length; index += 1) {
+    const start = history[index - 1];
+    const end = history[index];
+    const startLon = start?.derived?.longitude;
+    const startLat = start?.derived?.latitude;
+    const endLon = end?.derived?.longitude;
+    const endLat = end?.derived?.latitude;
+
+    if (![startLon, startLat, endLon, endLat].every(Number.isFinite)) {
+      continue;
+    }
+
+    features.push({
+      type: "Feature",
+      properties: {
+        startZ: scaleTrailAltitude(Number.isFinite(start.packet.altitude) ? start.packet.altitude : 0),
+        endZ: scaleTrailAltitude(Number.isFinite(end.packet.altitude) ? end.packet.altitude : 0),
+      },
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [startLon, startLat],
+          [endLon, endLat],
+        ],
+      },
+    });
+  }
+
+  return {
+    type: "FeatureCollection",
+    features,
+  };
+}
 
 export function MapWidget() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const viewerRef = useRef<Cesium.Viewer | null>(null);
+  const mapRef = useRef<mapboxgl.Map | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [viewerReady, setViewerReady] = useState(false);
+  const [modelScale, setModelScale] = useState(10000);
+
   const history = useDashboardStore((state) => state.history);
   const latest = history.at(-1) ?? null;
   const historyRef = useRef(history);
   const latestRef = useRef(latest);
-  const pathEntityRef = useRef<Cesium.Entity | null>(null);
-  const rocketEntityRef = useRef<Cesium.Entity | null>(null);
 
   useEffect(() => {
     historyRef.current = history;
     latestRef.current = latest;
   }, [history, latest]);
 
-  // Initialize Cesium viewer
   useEffect(() => {
-    if (!containerRef.current || viewerRef.current) {
+    if (!containerRef.current || mapRef.current) return;
+
+    const token = (import.meta as any).env?.VITE_MAPBOX_TOKEN;
+    if (!token) {
+      setError("Missing VITE_MAPBOX_TOKEN in environment");
+      setIsLoading(false);
       return;
     }
 
-    const initViewer = () => {
-      try {
-        const terrainProvider = new Cesium.EllipsoidTerrainProvider();
+    try {
+      mapboxgl.accessToken = token;
 
-        const viewer = new Cesium.Viewer(containerRef.current!, {
-          baseLayer: new Cesium.ImageryLayer(
-            new Cesium.UrlTemplateImageryProvider({
-              url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-              credit: "© Esri, DigitalGlobe, Earthstar Geographics",
-              maximumLevel: 18,
-            })
-          ),
-          terrainProvider: terrainProvider,
-          baseLayerPicker: false,
-          homeButton: false,
-          fullscreenButton: false,
-          vrButton: false,
-          geocoder: false,
-          navigationHelpButton: false,
-          infoBox: false,
-          selectionIndicator: false,
-          animation: false,
-          timeline: false,
-        });
+      const map = new mapboxgl.Map({
+        container: containerRef.current,
+        style: "mapbox://styles/mapbox/dark-v11",
+        center: [DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude],
+        zoom: DEFAULT_CENTER.zoom,
+        pitch: 45,
+        bearing: 0,
+      });
 
-        viewer.scene.globe.depthTestAgainstTerrain = false;
-        viewer.scene.globe.enableLighting = true;
+      map.on("load", () => {
+        // Add 3D terrain
+        if (!map.getSource("mapbox-dem")) {
+          map.addSource("mapbox-dem", {
+            type: "raster-dem",
+            url: "mapbox://mapbox.mapbox-terrain-dem-v1",
+            tileSize: 512,
+          });
+          map.setTerrain({ source: "mapbox-dem", exaggeration: 1.5 });
+        }
 
-        // Initial view
-        viewer.camera.setView({
-          destination: Cesium.Cartesian3.fromDegrees(
-            DEFAULT_CENTER.longitude,
-            DEFAULT_CENTER.latitude,
-            DEFAULT_CENTER.altitude
-          ),
-          orientation: {
-            heading: Cesium.Math.toRadians(0),
-            pitch: Cesium.Math.toRadians(-45),
-          },
-        });
+        // Add an empty GeoJSON source for the flight path
+        if (!map.getSource("flight-path")) {
+          map.addSource("flight-path", {
+            type: "geojson",
+            lineMetrics: true,
+            data: buildFlightPathGeoJSON([]) as any,
+          });
 
-        viewerRef.current = viewer;
+          map.addLayer({
+            id: "flight-path-line",
+            type: "line",
+            source: "flight-path",
+            minzoom: 0,
+            layout: {
+              "line-join": "round",
+              "line-cap": "round",
+              "line-elevation-reference": "ground",
+              "line-z-offset": ["interpolate", ["linear"], ["line-progress"], 0, ["get", "startZ"], 1, ["get", "endZ"]] as any,
+              "visibility": "visible",
+            },
+            paint: {
+              "line-color": "#ff2a2a",
+              "line-width": ["interpolate", ["linear"], ["zoom"], 0, 4, 6, 8, 12, 16, 22, 32],
+              "line-opacity": 0.98,
+              "line-emissive-strength": 1,
+            },
+          });
+        }
+
+        // Create a GeoJSON source for the rocket 3D model
+        if (!map.getSource("rocket-model")) {
+          map.addSource("rocket-model", {
+            type: "geojson",
+            data: {
+              type: "FeatureCollection",
+              features: [
+                {
+                  type: "Feature",
+                  geometry: {
+                    type: "Point",
+                    coordinates: [DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude],
+                  },
+                  properties: {},
+                },
+              ],
+            },
+          });
+
+        // Create and add rocket position marker
+        try {
+          if (!map.hasModel("rocket-model")) {
+            map.addModel("rocket-model", "/models/rocket.glb");
+          }
+
+          // 2. The corrected 3D Layer
+          map.addLayer({
+            id: "rocket-3d-layer",
+            type: "model",          // <--- This must be 'model', not 'circle'
+            source: "rocket-model", // The GeoJSON source containing your [lon, lat, alt]
+            minzoom: 0,
+            layout: {
+              // 'model-id' tells Mapbox which loaded 3D asset to use
+              "model-id": "rocket-model", 
+              
+              // Optional: Sync the rocket's yaw with your telemetry heading
+              "model-rotation": [0, 0, ["get", "heading"]], 
+              
+              // Optional: Scale the model up or down if it imports too small
+              "model-scale": [modelScale, modelScale, modelScale],
+              "visibility": "visible"
+            }
+          }as mapboxgl.LayerSpecification);
+          console.log("✅ Rocket marker layer added successfully");
+        } catch (e) {
+          console.error("❌ Failed to add marker layer:", e);
+        }
+        }
+
+        // ensure keyframes exist
+        if (!document.getElementById("mapbox-pulse-style")) {
+          const style = document.createElement("style");
+          style.id = "mapbox-pulse-style";
+          style.innerHTML = `@keyframes map-pulse { 0% { transform: translate(-50%,-50%) scale(0.7); opacity: 0.9 } 70% { transform: translate(-50%,-50%) scale(1.8); opacity: 0 } 100% { opacity: 0 } }`;
+          document.head.appendChild(style);
+        }
+
+        mapRef.current = map;
         setError(null);
         setIsLoading(false);
-        setViewerReady(true);
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error("Failed to initialize Cesium viewer", err);
-        setError(errorMsg);
-        setIsLoading(false);
-      }
-    };
+      });
 
-    initViewer();
+      map.on("error", (e) => {
+        console.error("Mapbox error:", e);
+      });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error("Failed to initialize Mapbox map", err);
+      setError(errorMsg);
+      setIsLoading(false);
+    }
 
     return () => {
-      if (viewerRef.current && !viewerRef.current.isDestroyed()) {
-        viewerRef.current.destroy();
-        viewerRef.current = null;
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
       }
-      setViewerReady(false);
     };
   }, []);
 
-  // Create path entity once after viewer is initialized.
+  // Update the flight path whenever history updates
   useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewerReady || !viewer || viewer.isDestroyed()) return;
+    const map = mapRef.current;
+    if (!map || !map.getSource || !historyRef.current) return;
 
     try {
-      if (!pathEntityRef.current) {
-        pathEntityRef.current = viewer.entities.add({
-          polyline: {
-            positions: [],
-            width: 5,
-            material: Cesium.Color.fromCssColorString("#ff0000").withAlpha(0.95),
-            clampToGround: false,
-          },
-        });
+      const source = map.getSource("flight-path") as mapboxgl.GeoJSONSource | undefined;
+      if (source) {
+        source.setData(buildFlightPathGeoJSON(historyRef.current) as any);
       }
     } catch (e) {
-      console.error("Error creating flight path entity:", e);
+      console.warn("Failed to update flight path", e);
     }
+  }, [history]);
 
-    return () => {
-      // Cleanup happens in the other useEffect
-    };
-  }, [viewerReady]);
+  const [autoFollow, setAutoFollow] = useState(true);
 
-  // Keep the path in sync with incoming telemetry samples using CallbackProperty to prevent flickering.
+  function computeRocketZoom(altitudeMeters: number) {
+    const altitude = Math.max(1, altitudeMeters);
+    const logScale = Math.log2(altitude / 300 + 1);
+    return Math.max(8.5, Math.min(12.5, 12.8 - logScale * 1.2));
+  }
+
+  // Update rocket marker when latest changes
   useEffect(() => {
-    const pathEntity = pathEntityRef.current;
-    if (!viewerReady || !pathEntity || !pathEntity.polyline) return;
-
-    pathEntity.polyline.positions = new Cesium.CallbackProperty(() => {
-      return historyRef.current
-        .filter((sample) => Number.isFinite(sample.derived.longitude) && Number.isFinite(sample.derived.latitude))
-        .map((sample) =>
-          Cesium.Cartesian3.fromDegrees(sample.derived.longitude, sample.derived.latitude, sample.packet.altitude)
-        );
-    }, false);
-  }, [viewerReady]);
-
-  // Update rocket marker with callback
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewerReady || !viewer || viewer.isDestroyed()) return;
+    const map = mapRef.current;
+    if (!map) return;
 
     try {
-      if (!rocketEntityRef.current) {
-        rocketEntityRef.current = viewer.entities.add({
-          position: new Cesium.CallbackPositionProperty(() => {
-            const currentLatest = latestRef.current;
-            if (!currentLatest) return Cesium.Cartesian3.fromDegrees(DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude, 0);
-            return Cesium.Cartesian3.fromDegrees(
-              currentLatest.derived.longitude,
-              currentLatest.derived.latitude,
-              currentLatest.packet.altitude
-            );
-          }, false),
-          point: {
-            pixelSize: 16,
-            color: Cesium.Color.fromCssColorString("#ff7d7d"),
-            outlineColor: Cesium.Color.WHITE,
-            outlineWidth: 3,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          },
-          label: {
-            text: new Cesium.CallbackProperty(() => {
-              const currentLatest = latestRef.current;
-              return currentLatest ? `${currentLatest.packet.altitude.toFixed(0)}m` : "--";
-            }, false),
-            font: "12px sans-serif",
-            fillColor: Cesium.Color.WHITE,
-            pixelOffset: new Cesium.Cartesian2(0, -20),
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          },
+      if (!latest) return;
+      const lon = latest.derived.longitude;
+      const lat = latest.derived.latitude;
+      const altitude = latest.packet.altitude;
+      const heading = Number.isFinite(latest.derived.azimuth_deg) ? latest.derived.azimuth_deg : 0;
+
+      // Update GeoJSON source for the marker
+      const source = map.getSource("rocket-model") as mapboxgl.GeoJSONSource | undefined;
+      if (source) {
+        source.setData({
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: {
+                type: "Point",
+                coordinates: [lon, lat, altitude],
+              },
+              properties: {
+                heading: heading,
+              },
+            },
+          ],
         });
       }
 
-      // Keep camera fully user-controlled (no auto-follow).
+      map.triggerRepaint();
+
+      // If auto-follow enabled, smoothly fly to the rocket
+      if (autoFollow) {
+        map.flyTo({
+          center: [lon, lat],
+          zoom: computeRocketZoom(altitude),
+          bearing: heading,
+          pitch: 62,
+          speed: 0.9,
+          curve: 1.2,
+        });
+      }
     } catch (e) {
-      console.warn("Error updating rocket marker:", e);
+      console.warn("Failed to update rocket 3D model", e);
     }
-  }, [latest, viewerReady]);
+  }, [latest, autoFollow]);
+
+  // Update model scale separately
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getLayer("rocket-3d-layer")) return;
+
+    try {
+      map.setLayoutProperty("rocket-3d-layer", "model-scale", [modelScale, modelScale, modelScale]);
+      map.triggerRepaint();
+    } catch (e) {
+      console.warn("Failed to update model scale", e);
+    }
+  }, [modelScale]);
 
   const focusRocket = () => {
-    const viewer = viewerRef.current;
-    if (!viewer || viewer.isDestroyed() || !latest) return;
+    const map = mapRef.current;
+    if (!map || !latest) return;
 
-    const rocketPosition = Cesium.Cartesian3.fromDegrees(
-      latest.derived.longitude,
-      latest.derived.latitude,
-      latest.packet.altitude
-    );
+    const lon = latest.derived.longitude;
+    const lat = latest.derived.latitude;
+    const heading = Number.isFinite(latest.derived.azimuth_deg) ? latest.derived.azimuth_deg : 0;
+    const alt = latest.packet.altitude ?? 1000;
+    const zoom = computeRocketZoom(alt);
 
-    const heading = Cesium.Math.toRadians(latest.derived.azimuth_deg);
-    const chaseDistance = Math.max(120, Math.min(450, latest.packet.altitude * 0.12));
-    const chaseHeight = Math.max(40, Math.min(180, latest.packet.altitude * 0.05));
-
-    // Local ENU offset for a third-person camera: behind rocket + slightly above.
-    const forwardEast = Math.sin(heading);
-    const forwardNorth = Math.cos(heading);
-    const offsetEast = -forwardEast * chaseDistance;
-    const offsetNorth = -forwardNorth * chaseDistance;
-    const localOffset = new Cesium.Cartesian3(offsetEast, offsetNorth, chaseHeight);
-
-    const enuFrame = Cesium.Transforms.eastNorthUpToFixedFrame(rocketPosition);
-    const cameraDestination = Cesium.Matrix4.multiplyByPoint(enuFrame, localOffset, new Cesium.Cartesian3());
-
-    viewer.camera.flyTo({
-      destination: cameraDestination,
-      orientation: {
-        heading,
-        pitch: Cesium.Math.toRadians(-18),
-        roll: 0,
-      },
-      duration: 1.0,
+    map.flyTo({
+      center: [lon, lat],
+      zoom,
+      bearing: heading,
+      pitch: 60,
+      speed: 0.8,
+      curve: 1.2,
     });
   };
 
+  const toggleAutoFollow = () => setAutoFollow((v) => !v);
+
   return (
-    <div className="widget-panel widget-panel-map widget-panel-cesium">
-      <div ref={containerRef} className="cesium-container" style={{ background: "#dfe8f2" }} />
-      {!error ? (
+    <div className="widget-panel widget-panel-map">
+      <div ref={containerRef} className="mapbox-container" style={{ width: "100%", height: "100%", minHeight: 360 }} />
+
+      <div style={{ position: "absolute", top: "0.75rem", right: "0.75rem", zIndex: 3, display: "flex", gap: "0.5rem" }}>
+        {!error ? (
         <button
           type="button"
           onClick={focusRocket}
@@ -235,7 +345,25 @@ export function MapWidget() {
         >
           Find Rocket
         </button>
-      ) : null}
+        ) : null}
+
+        <button
+          type="button"
+          onClick={toggleAutoFollow}
+          style={{
+            padding: "0.45rem 0.75rem",
+            borderRadius: "0.6rem",
+            border: "1px solid rgba(255, 255, 255, 0.2)",
+            background: autoFollow ? "rgba(20,120,20,0.85)" : "rgba(7, 16, 30, 0.8)",
+            color: "var(--text)",
+            fontSize: "0.8rem",
+            cursor: "pointer",
+          }}
+        >
+          {autoFollow ? "Auto-follow: On" : "Auto-follow: Off"}
+        </button>
+      </div>
+
       {isLoading && !error ? (
         <div
           style={{
@@ -249,9 +377,10 @@ export function MapWidget() {
             pointerEvents: "none",
           }}
         >
-          <p>Loading 3D map...</p>
+          <p>Loading map...</p>
         </div>
       ) : null}
+
       {error ? (
         <div
           style={{
@@ -268,11 +397,12 @@ export function MapWidget() {
           <p style={{ fontSize: "0.85rem", color: "var(--muted)" }}>Check the browser console for details.</p>
         </div>
       ) : null}
+
       {latest && (
         <div className="map-caption">
           <span>Time {latest.packet.time} ms</span>
           <span>
-            Phase{" "}
+            Phase {" "}
             {latest.packet.time <= 800
               ? "PAD"
               : latest.packet.time <= 6300
@@ -290,6 +420,39 @@ export function MapWidget() {
           <span>Az {latest.derived.azimuth_deg.toFixed(1)}°</span>
         </div>
       )}
+
+      <div
+        style={{
+          position: "absolute",
+          right: "0.75rem",
+          bottom: "0.75rem",
+          zIndex: 3,
+          width: "min(18rem, calc(100% - 1.5rem))",
+          padding: "1rem",
+          borderRadius: "1rem",
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(6, 12, 24, 0.84)",
+          backdropFilter: "blur(10px)",
+          color: "var(--text)",
+        }}
+      >
+        <div style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--muted)", marginBottom: "0.35rem" }}>
+          Model Scale Controls
+        </div>
+        <div style={{ fontSize: "0.85rem", marginBottom: "0.45rem" }}>Scale: {modelScale.toFixed(0)}x</div>
+        <input
+          type="range"
+          min="1000"
+          max="50000"
+          step="1000"
+          value={modelScale}
+          onChange={(e) => setModelScale(parseInt(e.target.value, 10))}
+          style={{ width: "100%" }}
+        />
+        <div style={{ marginTop: "0.6rem", fontSize: "0.75rem", color: "var(--muted)" }}>
+          Adjust rocket model visibility
+        </div>
+      </div>
     </div>
   );
 }

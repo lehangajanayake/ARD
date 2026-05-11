@@ -2,7 +2,16 @@ import { useMemo, useSyncExternalStore } from "react";
 import type { TelemetrySample } from "../types/telemetry";
 
 export type WidgetKind = "map" | "chart" | "status";
-export type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+export type ConnectionState = "disconnected" | "connecting" | "connected" | "demo" | "error";
+export type PlaybackMode = "live" | "replay";
+export type TelemetrySource = "live" | "demo";
+
+export type PlaybackState = {
+  mode: PlaybackMode;
+  isPlaying: boolean;
+  speed: number;
+  cursor: number;
+};
 
 export type WidgetLayout = {
   id: string;
@@ -17,9 +26,14 @@ export type WidgetLayout = {
 };
 
 type DashboardState = {
+  telemetrySource: TelemetrySource;
   connectionState: ConnectionState;
   latest: TelemetrySample | null;
   history: TelemetrySample[];
+  liveLatest: TelemetrySample | null;
+  liveHistory: TelemetrySample[];
+  archive: TelemetrySample[];
+  playback: PlaybackState;
   widgets: WidgetLayout[];
 };
 
@@ -32,9 +46,19 @@ const defaultWidgets: WidgetLayout[] = [
 ];
 
 let state: DashboardState = {
-  connectionState: "disconnected",
+  telemetrySource: "demo",
+  connectionState: "demo",
   latest: null,
   history: [],
+  liveLatest: null,
+  liveHistory: [],
+  archive: [],
+  playback: {
+    mode: "live",
+    isPlaying: false,
+    speed: 1,
+    cursor: -1,
+  },
   widgets: defaultWidgets,
 };
 
@@ -59,6 +83,46 @@ function clampLayout(widget: WidgetLayout): WidgetLayout {
   };
 }
 
+function clampPlaybackCursor(cursor: number, archiveLength: number) {
+  if (archiveLength <= 0) {
+    return -1;
+  }
+
+  return Math.max(0, Math.min(cursor, archiveLength - 1));
+}
+
+function buildPlaybackView(archive: TelemetrySample[], cursor: number) {
+  const safeCursor = clampPlaybackCursor(cursor, archive.length);
+  const history = safeCursor >= 0 ? archive.slice(0, safeCursor + 1) : [];
+  const latest = safeCursor >= 0 ? archive[safeCursor] ?? null : null;
+
+  return { latest, history, cursor: safeCursor };
+}
+
+function resolveLiveView(current: DashboardState) {
+  return {
+    latest: current.liveLatest,
+    history: current.liveHistory,
+  };
+}
+
+function resetTelemetryPlayback(current: DashboardState) {
+  return {
+    ...current,
+    latest: null,
+    history: [],
+    liveLatest: null,
+    liveHistory: [],
+    archive: [],
+    playback: {
+      ...current.playback,
+      mode: "live" as PlaybackMode,
+      isPlaying: false,
+      cursor: -1,
+    },
+  };
+}
+
 export function subscribe(listener: DashboardListener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -74,18 +138,156 @@ export function useDashboardStore<T>(selector: (state: DashboardState) => T): T 
 }
 
 export const dashboardActions = {
+  setTelemetrySource(telemetrySource: TelemetrySource) {
+    setState((current) => {
+      const base = resetTelemetryPlayback(current);
+      return {
+        ...base,
+        telemetrySource,
+        connectionState: telemetrySource === "demo" ? "demo" : "disconnected",
+      };
+    });
+  },
   setConnectionState(connectionState: ConnectionState) {
     setState((current) => ({ ...current, connectionState }));
   },
   pushTelemetry(sample: TelemetrySample) {
     setState((current) => {
-      const nextHistory = [...current.history, sample].slice(-180);
+      const liveHistory = [...current.liveHistory, sample].slice(-180);
+      const archive = [...current.archive, sample].slice(-5000);
+
+      if (current.playback.mode === "replay") {
+        return {
+          ...current,
+          liveLatest: sample,
+          liveHistory,
+          archive,
+        };
+      }
+
       return {
         ...current,
         latest: sample,
-        history: nextHistory,
+        history: liveHistory,
+        liveLatest: sample,
+        liveHistory,
+        archive,
+        playback: {
+          ...current.playback,
+          cursor: archive.length - 1,
+        },
       };
     });
+  },
+  setPlaybackMode(mode: PlaybackMode) {
+    setState((current) => {
+      if (mode === "live") {
+        const liveView = resolveLiveView(current);
+        return {
+          ...current,
+          playback: {
+            ...current.playback,
+            mode,
+            isPlaying: false,
+            cursor: current.liveHistory.length - 1,
+          },
+          latest: liveView.latest,
+          history: liveView.history,
+        };
+      }
+
+      const { latest, history, cursor } = buildPlaybackView(current.archive, current.playback.cursor);
+      return {
+        ...current,
+        playback: {
+          ...current.playback,
+          mode,
+          cursor,
+          isPlaying: current.archive.length > 0,
+        },
+        latest,
+        history,
+      };
+    });
+  },
+  setPlaybackSpeed(speed: number) {
+    setState((current) => ({
+      ...current,
+      playback: {
+        ...current.playback,
+        speed: Math.max(0.25, Math.min(speed, 16)),
+      },
+    }));
+  },
+  setPlaybackPlaying(isPlaying: boolean) {
+    setState((current) => ({
+      ...current,
+      playback: {
+        ...current.playback,
+        isPlaying,
+      },
+    }));
+  },
+  seekPlayback(cursor: number) {
+    setState((current) => {
+      const { latest, history, cursor: safeCursor } = buildPlaybackView(current.archive, cursor);
+      return {
+        ...current,
+        playback: {
+          ...current.playback,
+          mode: current.archive.length > 0 ? "replay" : current.playback.mode,
+          cursor: safeCursor,
+          isPlaying: false,
+        },
+        latest,
+        history,
+      };
+    });
+  },
+  advancePlayback() {
+    setState((current) => {
+      if (current.playback.mode !== "replay" || !current.playback.isPlaying) {
+        return current;
+      }
+
+      const nextCursor = clampPlaybackCursor(current.playback.cursor + 1, current.archive.length);
+      const { latest, history, cursor } = buildPlaybackView(current.archive, nextCursor);
+      const isPlaying = cursor < current.archive.length - 1;
+
+      return {
+        ...current,
+        playback: {
+          ...current.playback,
+          cursor,
+          isPlaying,
+        },
+        latest,
+        history,
+      };
+    });
+  },
+  stopPlayback() {
+    setState((current) => ({
+      ...current,
+      playback: {
+        ...current.playback,
+        isPlaying: false,
+      },
+    }));
+  },
+  clearArchive() {
+    setState((current) => ({
+      ...current,
+      archive: [],
+      playback: {
+        ...current.playback,
+        mode: "live",
+        isPlaying: false,
+        cursor: -1,
+      },
+      latest: current.liveLatest,
+      history: current.liveHistory,
+    }));
   },
   moveWidget(id: string, x: number, y: number) {
     setState((current) => ({

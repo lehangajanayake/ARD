@@ -1,10 +1,13 @@
 import { Routes, Route, useNavigate, useParams } from "react-router-dom";
 import { dashboardActions, useDashboardStore } from "./store/useDashboardStore";
-import { useTelemetrySocket } from "./hooks/useTelemetrySocket";
+import { useTelemetryFeed } from "./hooks/useTelemetryFeed";
+import { useTelemetryPlayback } from "./hooks/useTelemetryPlayback";
 import { Dashboard } from "./components/Dashboard";
 import { MapWidget } from "./components/widgets/MapWidget";
 import { TelemetryChartWidget } from "./components/widgets/TelemetryChartWidget";
 import { StatusWidget } from "./components/widgets/StatusWidget";
+import { TelemetryPlaybackControls } from "./components/TelemetryPlaybackControls";
+import { ModelDebugViewer } from "./components/ModelDebugViewer";
 
 function FullScreenWidget() {
   const widgets = useDashboardStore((state) => state.widgets);
@@ -27,7 +30,8 @@ function FullScreenWidget() {
 }
 
 function StandaloneWidgetPage() {
-  useTelemetrySocket();
+  useTelemetryFeed();
+  useTelemetryPlayback();
   const navigate = useNavigate();
   const { widgetId } = useParams();
   const widget = useDashboardStore((state) => state.widgets.find((item) => item.id === widgetId) ?? null);
@@ -75,7 +79,8 @@ function StandaloneWidgetPage() {
 }
 
 function DashboardPage() {
-  useTelemetrySocket();
+  useTelemetryFeed();
+  useTelemetryPlayback();
 
   return (
     <main className="app-shell">
@@ -85,11 +90,18 @@ function DashboardPage() {
           <h1>Hobby Rocket Mission Dashboard</h1>
         </div>
         <div className="topbar-actions">
+          <button data-primary="true" onClick={() => dashboardActions.setTelemetrySource("demo")}>Use demo data</button>
+          <button onClick={() => dashboardActions.setTelemetrySource("live")}>Use live feed</button>
           <button onClick={() => dashboardActions.addWidget("map")}>Add map</button>
           <button onClick={() => dashboardActions.addWidget("chart")}>Add chart</button>
           <button onClick={() => dashboardActions.addWidget("status")}>Add status</button>
         </div>
       </header>
+      <div className="demo-banner">
+        <strong>DEMO MODE</strong>
+        <span>Auto-generated rocket telemetry is running so you can show the map and replay without the backend.</span>
+      </div>
+      <TelemetryPlaybackControls />
       <Dashboard />
       <FullScreenWidget />
     </main>
@@ -101,6 +113,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<DashboardPage />} />
       <Route path="/widget/:widgetId" element={<StandaloneWidgetPage />} />
+      <Route path="/debug/model" element={<ModelDebugViewer />} />
       <Route path="*" element={<DashboardPage />} />
     </Routes>
   );
