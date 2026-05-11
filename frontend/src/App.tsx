@@ -3,6 +3,7 @@ import { dashboardActions, useDashboardStore } from "./store/useDashboardStore";
 import { useTelemetryFeed } from "./hooks/useTelemetryFeed";
 import { useTelemetryPlayback } from "./hooks/useTelemetryPlayback";
 import { Dashboard } from "./components/Dashboard";
+import { GroundStationDashboard } from "./components/GroundStationDashboard";
 import { MapWidget } from "./components/widgets/MapWidget";
 import { TelemetryChartWidget } from "./components/widgets/TelemetryChartWidget";
 import { StatusWidget } from "./components/widgets/StatusWidget";
@@ -80,6 +81,41 @@ function StandaloneWidgetPage() {
 function DashboardPage() {
   useTelemetryFeed();
   useTelemetryPlayback();
+  const navigate = useNavigate();
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">ARD Ground Station</p>
+          <h1>Mission Control</h1>
+        </div>
+        <div className="topbar-actions">
+          <button onClick={() => navigate("/dashboard")}>View Dashboard</button>
+          <button data-primary="true" onClick={() => dashboardActions.setTelemetrySource("demo")}>Use demo data</button>
+          <button onClick={() => dashboardActions.setTelemetrySource("live")}>Use live feed</button>
+        </div>
+      </header>
+      <GroundStationDashboard />
+    </main>
+  );
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<DashboardPage />} />
+      <Route path="/dashboard" element={<LegacyDashboardPage />} />
+      <Route path="/widget/:widgetId" element={<StandaloneWidgetPage />} />
+      <Route path="*" element={<DashboardPage />} />
+    </Routes>
+  );
+}
+
+function LegacyDashboardPage() {
+  useTelemetryFeed();
+  useTelemetryPlayback();
+  const navigate = useNavigate();
 
   return (
     <main className="app-shell">
@@ -89,6 +125,7 @@ function DashboardPage() {
           <h1>Hobby Rocket Mission Dashboard</h1>
         </div>
         <div className="topbar-actions">
+          <button onClick={() => navigate("/")}>Back to Mission Control</button>
           <button data-primary="true" onClick={() => dashboardActions.setTelemetrySource("demo")}>Use demo data</button>
           <button onClick={() => dashboardActions.setTelemetrySource("live")}>Use live feed</button>
           <button onClick={() => dashboardActions.addWidget("map")}>Add map</button>
@@ -104,15 +141,5 @@ function DashboardPage() {
       <Dashboard />
       <FullScreenWidget />
     </main>
-  );
-}
-
-export default function App() {
-  return (
-    <Routes>
-      <Route path="/" element={<DashboardPage />} />
-      <Route path="/widget/:widgetId" element={<StandaloneWidgetPage />} />
-      <Route path="*" element={<DashboardPage />} />
-    </Routes>
   );
 }
