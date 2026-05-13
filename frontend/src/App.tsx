@@ -90,16 +90,15 @@ function DashboardPage() {
           <h1>Hobby Rocket Mission Dashboard</h1>
         </div>
         <div className="topbar-actions">
-          <button data-primary="true" onClick={() => dashboardActions.setTelemetrySource("demo")}>Use demo data</button>
-          <button onClick={() => dashboardActions.setTelemetrySource("live")}>Use live feed</button>
+          <button data-primary="true" onClick={() => dashboardActions.setTelemetrySource("live")}>Backend feed</button>
           <button onClick={() => dashboardActions.addWidget("map")}>Add map</button>
           <button onClick={() => dashboardActions.addWidget("chart")}>Add chart</button>
           <button onClick={() => dashboardActions.addWidget("status")}>Add status</button>
         </div>
       </header>
       <div className="demo-banner">
-        <strong>DEMO MODE</strong>
-        <span>Auto-generated rocket telemetry is running so you can show the map and replay without the backend.</span>
+        <strong>BACKEND STREAM</strong>
+        <span>The dashboard is now driven by the backend replay stream using the generated BlueRaven test data.</span>
       </div>
       <TelemetryPlaybackControls />
       <Dashboard />

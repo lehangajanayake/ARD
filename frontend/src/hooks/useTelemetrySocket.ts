@@ -3,7 +3,7 @@ import { io, Socket } from "socket.io-client";
 import { dashboardActions } from "../store/useDashboardStore";
 import { normalizeTelemetryMessage } from "../lib/telemetry";
 
-const SOCKET_URL = import.meta.env.VITE_TELEMETRY_WS_URL ?? "http://localhost:5000";
+const SOCKET_URL = import.meta.env.VITE_TELEMETRY_WS_URL ?? "http://127.0.0.1:5000";
 
 export function useTelemetrySocket() {
   const retryRef = useRef(0);
@@ -24,7 +24,7 @@ export function useTelemetrySocket() {
         reconnectionDelay: 500,
         reconnectionDelayMax: 10_000,
         reconnectionAttempts: Infinity,
-        transports: ["websocket", "polling"],
+        transports: ["polling"],
       });
 
       socket.on("connect", () => {

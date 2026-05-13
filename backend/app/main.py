@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import csv
 import math
+import os
+import sys
 import time
+import threading
+import select
+import tty
+import termios
 from pathlib import Path
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -13,7 +19,11 @@ from .pipeline.telemetry_pipeline import TelemetryPipeline
 from .pipeline.recorder import TelemetryRecorder
 
 app = Flask(__name__)
-CORS(app, origins=["http://127.0.0.1:5173", "*"], supports_credentials=True)
+CORS(
+    app,
+    origins=["http://127.0.0.1:5173", "http://localhost:5173", "*"],
+    supports_credentials=True,
+)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 serial_source = SerialSource(baudrate=115200)
@@ -171,6 +181,47 @@ def restart_simulation():
     return jsonify({"success": True, "message": "Simulation restarted"})
 
 
+def _stdin_watcher():
+    """Background watcher that listens to stdin and restarts simulation on 'R' or 'r'.
+
+    Supports single-key presses when stdin is a TTY (no Enter required). When
+    stdin is not a TTY (e.g., redirected), falls back to line-based input.
+    """
+    global _simulation_start_time, _simulation_index
+
+    def do_restart():
+        global _simulation_start_time, _simulation_index
+        _simulation_start_time = time.time()
+        _simulation_index = 0
+        try:
+            socketio.emit("simulation_restarted", {"success": True}, broadcast=True)
+        except Exception:
+            pass
+        print("Simulation restarted via keyboard")
+
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setcbreak(fd)
+                while True:
+                    rlist, _, _ = select.select([sys.stdin], [], [], 0.2)
+                    if rlist:
+                        ch = sys.stdin.read(1)
+                        if ch and ch.lower() == "r":
+                            do_restart()
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        else:
+            # Fallback: line-based reading (requires Enter)
+            for line in sys.stdin:
+                if "r" in line.lower():
+                    do_restart()
+    except Exception as e:
+        print(f"stdin watcher exited: {e}")
+
+
 @socketio.on("connect")
 def handle_connect():
     global stream_task
@@ -258,6 +309,14 @@ def stream_telemetry():
             # Real serial data stream
             socketio.sleep(0.01)
 
+
+if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or __name__ == "__main__":
+    # Start stdin watcher in the reloader child or when running directly.
+    try:
+        socketio.start_background_task(_stdin_watcher)
+    except Exception:
+        watcher_thread = threading.Thread(target=_stdin_watcher, daemon=True)
+        watcher_thread.start()
 
 if __name__ == "__main__":
     socketio.run(app, debug=True, host="127.0.0.1", port=5000)

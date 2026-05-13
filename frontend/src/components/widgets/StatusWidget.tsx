@@ -1,7 +1,6 @@
 import { useDashboardStore } from "../../store/useDashboardStore";
 
 export function StatusWidget() {
-  const telemetrySource = useDashboardStore((state) => state.telemetrySource);
   const connectionState = useDashboardStore((state) => state.connectionState);
   const latest = useDashboardStore((state) => state.latest);
   const playback = useDashboardStore((state) => state.playback);
@@ -9,7 +8,7 @@ export function StatusWidget() {
 
   return (
     <div className="widget-panel widget-panel-status">
-      <div className="status-row"><span>Feed</span><strong>{telemetrySource === "demo" ? "Demo data" : "Live feed"}</strong></div>
+      <div className="status-row"><span>Feed</span><strong>Backend replay</strong></div>
       <div className="status-row"><span>Connection</span><strong>{connectionState}</strong></div>
       <div className="status-row"><span>Mode</span><strong>{playback.mode === "live" ? "Live" : playback.isPlaying ? "Replay ▶" : "Replay ⏸"}</strong></div>
       <div className="status-row"><span>Archive</span><strong>{archiveCount} samples</strong></div>
