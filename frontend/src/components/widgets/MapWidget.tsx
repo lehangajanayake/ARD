@@ -83,7 +83,7 @@ export function MapWidget() {
 
       const map = new mapboxgl.Map({
         container: containerRef.current,
-        style: "mapbox://styles/mapbox/dark-v11",
+        style: "mapbox://styles/mapbox/satellite-v9",
         center: [DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude],
         zoom: DEFAULT_CENTER.zoom,
         pitch: 45,
@@ -98,7 +98,7 @@ export function MapWidget() {
             url: "mapbox://mapbox.mapbox-terrain-dem-v1",
             tileSize: 512,
           });
-          map.setTerrain({ source: "mapbox-dem", exaggeration: 1.5 });
+          map.setTerrain({ source: "mapbox-dem", exaggeration: 2 });
         }
 
         // Add an empty GeoJSON source for the flight path
@@ -123,7 +123,7 @@ export function MapWidget() {
             },
             paint: {
               "line-color": "#ff2a2a",
-              "line-width": ["interpolate", ["linear"], ["zoom"], 0, 4, 6, 8, 12, 16, 22, 32],
+              "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 0, 1, 4, 1.5, 8, 2.5, 12, 4, 16, 6, 20, 8],
               "line-opacity": 0.98,
               "line-emissive-strength": 1,
             },
