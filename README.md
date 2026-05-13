@@ -93,14 +93,12 @@ flowchart TD
   B --> C[PacketParser<br/>Parse CSV or binary<br/>format]
   C --> D{Valid?}
   D -->|No| E[InterferenceMonitor<br/>record parse failure]
-  D -->|Yes| F[InterferenceMonitor<br/>Quality checks:<br/>RSSI/SNR, packet loss,<br/>altitude spikes,<br/>timestamp jumps]
+  D -->|Yes| F[InterferenceMonitor<br/>Quality checks:<br/>packet loss<br/>altitude spikes,<br/>timestamp jumps]
   F --> G[TelemetryRecorder<br/>Write to flight_log.csv]
   G --> H[Socket.IO Broadcaster<br/>emit telemetry_data event]
-  H -->|ws + fallback| I[Frontend WebSocket Hook<br/>useTelemetrySocket.ts]
-  I --> J[Dashboard Store<br/>useDashboardStore.ts]
-  J --> K1[Map Widget<br/>Real-time 3D tracking]
-  J --> K2[Chart Widget<br/>Altitude/Velocity]
-  J --> K3[Status Widget<br/>Connection + Quality]
+  H --> K1[Map Widget<br/>Real-time 3D tracking]
+  H --> K2[Chart Widget<br/>Altitude/Velocity]
+  H --> K3[Status Widget<br/>Connection + Quality]
 ```
 
 ### Pipeline Stages
