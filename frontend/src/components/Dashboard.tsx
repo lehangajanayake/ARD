@@ -1,5 +1,4 @@
 import { dashboardActions, useDashboardStore } from "../store/useDashboardStore";
-import { useTelemetrySocket } from "../hooks/useTelemetrySocket";
 import { WidgetFrame } from "./WidgetFrame";
 import { MapWidget } from "./widgets/MapWidget";
 import { TelemetryChartWidget } from "./widgets/TelemetryChartWidget";
@@ -7,7 +6,6 @@ import { StatusWidget } from "./widgets/StatusWidget";
 import { useNavigate } from "react-router-dom";
 
 export function Dashboard() {
-  useTelemetrySocket();
   const widgets = useDashboardStore((state) => state.widgets);
   const navigate = useNavigate();
 

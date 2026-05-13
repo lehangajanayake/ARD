@@ -4,43 +4,62 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { useDashboardStore } from "../../store/useDashboardStore";
 import type { TelemetrySample } from "../../types/telemetry";
 
-const DEFAULT_CENTER = { latitude: 35.0, longitude: -117.0, zoom: 6 };
+const DEFAULT_CENTER = { latitude: -30.670535341898105, longitude: 143.18988386875418, zoom: 8.25 };
 
 function scaleTrailAltitude(altitudeMeters: number) {
   return Math.max(8, altitudeMeters * 0.85);
 }
 
+function metersPerDegreeLatitude() {
+  return 111_320;
+}
+
+function metersPerDegreeLongitude(latitude: number) {
+  return 111_320 * Math.cos((latitude * Math.PI) / 180);
+}
+
+function buildCylinderPolygon([longitude, latitude]: [number, number], radiusMeters: number, segments = 16) {
+  const latScale = metersPerDegreeLatitude();
+  const lonScale = Math.max(1, metersPerDegreeLongitude(latitude));
+  const coordinates: [number, number][] = [];
+
+  for (let index = 0; index <= segments; index += 1) {
+    const angle = (index / segments) * Math.PI * 2;
+    const offsetLon = (Math.cos(angle) * radiusMeters) / lonScale;
+    const offsetLat = (Math.sin(angle) * radiusMeters) / latScale;
+    coordinates.push([longitude + offsetLon, latitude + offsetLat]);
+  }
+
+  return coordinates;
+}
+
 function buildFlightPathGeoJSON(history: TelemetrySample[]) {
   const features: Array<{
     type: "Feature";
-    properties: { startZ: number; endZ: number };
-    geometry: { type: "LineString"; coordinates: [number, number][] };
+    properties: { height: number; radius: number };
+    geometry: { type: "Polygon"; coordinates: [number, number][][] };
   }> = [];
 
-  for (let index = 1; index < history.length; index += 1) {
-    const start = history[index - 1];
-    const end = history[index];
-    const startLon = start?.derived?.longitude;
-    const startLat = start?.derived?.latitude;
-    const endLon = end?.derived?.longitude;
-    const endLat = end?.derived?.latitude;
+  for (const sample of history) {
+    const longitude = sample?.derived?.longitude;
+    const latitude = sample?.derived?.latitude;
 
-    if (![startLon, startLat, endLon, endLat].every(Number.isFinite)) {
+    if (![longitude, latitude].every(Number.isFinite)) {
       continue;
     }
+
+    const height = scaleTrailAltitude(Number.isFinite(sample.packet.altitude) ? sample.packet.altitude : 0);
+    const radius = Math.max(1.8, Math.min(10, height * 0.03));
 
     features.push({
       type: "Feature",
       properties: {
-        startZ: scaleTrailAltitude(Number.isFinite(start.packet.altitude) ? start.packet.altitude : 0),
-        endZ: scaleTrailAltitude(Number.isFinite(end.packet.altitude) ? end.packet.altitude : 0),
+        height,
+        radius,
       },
       geometry: {
-        type: "LineString",
-        coordinates: [
-          [startLon, startLat],
-          [endLon, endLat],
-        ],
+        type: "Polygon",
+        coordinates: [buildCylinderPolygon([longitude, latitude], radius)],
       },
     });
   }
@@ -59,17 +78,20 @@ export function MapWidget() {
   const [isLoading, setIsLoading] = useState(true);
 
   const history = useDashboardStore((state) => state.history);
-  const latest = history.at(-1) ?? null;
-  const historyRef = useRef(history);
-  const latestRef = useRef(latest);
-
-  useEffect(() => {
-    historyRef.current = history;
-    latestRef.current = latest;
-  }, [history, latest]);
+  const latest = useDashboardStore((state) => state.latest);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
+
+    // Clean any leftover Mapbox DOM nodes from previous mounts to avoid
+    // duplicate maps stacking in the same container (causes ghost maps at
+    // stale zoom/position).
+    try {
+      containerRef.current.innerHTML = "";
+    } catch (e) {
+      // ignore
+    }
+    let onZoom: (() => void) | null = null;
 
     const token = (import.meta as any).env?.VITE_MAPBOX_TOKEN;
     if (!token) {
@@ -83,7 +105,7 @@ export function MapWidget() {
 
       const map = new mapboxgl.Map({
         container: containerRef.current,
-        style: "mapbox://styles/mapbox/dark-v11",
+        style: "mapbox://styles/mapbox/satellite-v9",
         center: [DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude],
         zoom: DEFAULT_CENTER.zoom,
         pitch: 45,
@@ -98,70 +120,60 @@ export function MapWidget() {
             url: "mapbox://mapbox.mapbox-terrain-dem-v1",
             tileSize: 512,
           });
-          map.setTerrain({ source: "mapbox-dem", exaggeration: 1.5 });
+          map.setTerrain({ source: "mapbox-dem", exaggeration: 2 });
         }
 
-        // Add an empty GeoJSON source for the flight path
-        if (!map.getSource("flight-path")) {
-          map.addSource("flight-path", {
+        // Add a 3D cylinder-like trail source for the full flight path
+        if (!map.getSource("flight-path-cylinders")) {
+          map.addSource("flight-path-cylinders", {
             type: "geojson",
-            lineMetrics: true,
-            data: buildFlightPathGeoJSON([]),
+            data: buildFlightPathGeoJSON([]) as any,
           });
 
           map.addLayer({
-            id: "flight-path-line",
+            id: "flight-path-cylinders-fill",
+            type: "fill-extrusion",
+            source: "flight-path-cylinders",
+            layout: {
+              "visibility": "visible",
+            },
+            paint: {
+              "fill-extrusion-color": "#ff2a2a",
+              "fill-extrusion-opacity": 0.8,
+              "fill-extrusion-height": ["get", "height"] as any,
+              "fill-extrusion-base": 0,
+              "fill-extrusion-vertical-gradient": true,
+            },
+          });
+
+          map.addLayer({
+            id: "flight-path-cylinders-outline",
             type: "line",
-            source: "flight-path",
+            source: "flight-path-cylinders",
             layout: {
               "line-join": "round",
               "line-cap": "round",
-              "line-elevation-reference": "ground",
-              "line-width-unit": "meters",
-              "line-z-offset": ["interpolate", ["linear"], ["line-progress"], 0, ["get", "startZ"], 1, ["get", "endZ"]] as any,
             },
             paint: {
-              "line-color": "#ff2a2a",
-              "line-width": 12,
-              "line-opacity": 0.98,
-              "line-emissive-strength": 1,
+              "line-color": "#ff5858",
+              "line-width": 1.25,
+              "line-opacity": 0.9,
             },
           });
         }
 
-        // Create a marker for the rocket (with pulsing inner)
-        const el = document.createElement("div");
-        el.className = "rocket-marker";
-        el.style.width = "22px";
-        el.style.height = "22px";
-        el.style.display = "flex";
-        el.style.alignItems = "center";
-        el.style.justifyContent = "center";
+        if (!markerRef.current) {
+          const markerElement = document.createElement("div");
+          markerElement.style.width = "14px";
+          markerElement.style.height = "14px";
+          markerElement.style.borderRadius = "999px";
+          markerElement.style.border = "2px solid rgba(255,255,255,0.9)";
+          markerElement.style.background = "#ff2a2a";
 
-        const dot = document.createElement("div");
-        dot.style.width = "12px";
-        dot.style.height = "12px";
-        dot.style.borderRadius = "50%";
-        dot.style.background = "#ff7d7d";
-        dot.style.border = "2px solid white";
-        dot.style.boxSizing = "border-box";
-        dot.style.boxShadow = "0 0 6px rgba(0,0,0,0.4)";
-        dot.style.position = "relative";
-
-        const pulse = document.createElement("div");
-        pulse.style.position = "absolute";
-        pulse.style.left = "50%";
-        pulse.style.top = "50%";
-        pulse.style.transform = "translate(-50%, -50%)";
-        pulse.style.width = "12px";
-        pulse.style.height = "12px";
-        pulse.style.borderRadius = "50%";
-        pulse.style.background = "rgba(255,125,125,0.4)";
-        pulse.style.zIndex = "-1";
-        pulse.style.animation = "map-pulse 1.6s infinite";
-
-        el.appendChild(pulse);
-        el.appendChild(dot);
+          markerRef.current = new mapboxgl.Marker({ element: markerElement, anchor: "bottom" })
+            .setLngLat([DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude])
+            .addTo(map);
+        }
 
         // ensure keyframes exist
         if (!document.getElementById("mapbox-pulse-style")) {
@@ -171,10 +183,8 @@ export function MapWidget() {
           document.head.appendChild(style);
         }
 
-        const marker = new mapboxgl.Marker(el).setLngLat([DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude]).addTo(map);
-        markerRef.current = marker;
-
         mapRef.current = map;
+       
         setError(null);
         setIsLoading(false);
       });
@@ -190,29 +200,33 @@ export function MapWidget() {
     }
 
     return () => {
-      if (markerRef.current) {
-        markerRef.current.remove();
-        markerRef.current = null;
-      }
       if (mapRef.current) {
+        if (onZoom) {
+          try {
+            mapRef.current.off("zoom", onZoom);
+          } catch (e) {
+            // ignore
+          }
+        }
         mapRef.current.remove();
         mapRef.current = null;
       }
+      markerRef.current = null;
     };
   }, []);
 
   // Update the flight path whenever history updates
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.getSource || !historyRef.current) return;
+    if (!map || !map.getSource) return;
 
     try {
-      const source = map.getSource("flight-path") as mapboxgl.GeoJSONSource | undefined;
+      const source = map.getSource("flight-path-cylinders") as mapboxgl.GeoJSONSource | undefined;
       if (source) {
-        source.setData(buildFlightPathGeoJSON(historyRef.current));
+        source.setData(buildFlightPathGeoJSON(history) as any);
       }
     } catch (e) {
-      console.warn("Failed to update flight path", e);
+      console.warn("Failed to update flight path cylinders", e);
     }
   }, [history]);
 
@@ -228,26 +242,23 @@ export function MapWidget() {
   useEffect(() => {
     const map = mapRef.current;
     const marker = markerRef.current;
-    if (!map || !marker) return;
+    if (!map || !marker || !latest) return;
 
     try {
-      if (!latest) return;
       const lon = latest.derived.longitude;
       const lat = latest.derived.latitude;
+      const altitude = latest.packet.altitude;
+      const heading = Number.isFinite(latest.derived.azimuth_deg) ? latest.derived.azimuth_deg : 0;
 
       marker.setLngLat([lon, lat]);
+      (marker as any).setAltitude?.(altitude);
+      marker.setRotation(heading);
 
-      // Optionally update a small popup with altitude
-      const altitude = latest.packet.altitude != null ? `${latest.packet.altitude.toFixed(0)}m` : "--";
-      // Use a title attribute for simple hover tooltip
-      const el = marker.getElement();
-      el.setAttribute("title", altitude);
       // If auto-follow enabled, smoothly fly to the rocket
       if (autoFollow) {
-        const heading = Number.isFinite(latest.derived.azimuth_deg) ? latest.derived.azimuth_deg : 0;
         map.flyTo({
           center: [lon, lat],
-          zoom: computeRocketZoom(latest.packet.altitude),
+          zoom: computeRocketZoom(altitude),
           bearing: heading,
           pitch: 62,
           speed: 0.9,
@@ -255,7 +266,7 @@ export function MapWidget() {
         });
       }
     } catch (e) {
-      console.warn("Failed to update rocket marker", e);
+      console.warn("Failed to update rocket 3D model", e);
     }
   }, [latest, autoFollow]);
 
@@ -383,6 +394,32 @@ export function MapWidget() {
           <span>Az {latest.derived.azimuth_deg.toFixed(1)}°</span>
         </div>
       )}
+
+      <div
+        style={{
+          position: "absolute",
+          right: "0.75rem",
+          bottom: "0.75rem",
+          zIndex: 3,
+          width: "min(18rem, calc(100% - 1.5rem))",
+          padding: "1rem",
+          borderRadius: "1rem",
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(6, 12, 24, 0.84)",
+          backdropFilter: "blur(10px)",
+          color: "var(--text)",
+        }}
+      >
+        <div style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--muted)", marginBottom: "0.35rem" }}>
+          Marker Status
+        </div>
+        <div style={{ fontSize: "0.85rem", marginBottom: "0.45rem" }}>
+          {latest ? "Rocket position follows backend replay" : "Waiting for telemetry"}
+        </div>
+        <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+          Use Find Rocket to refocus the backend-driven flight path.
+        </div>
+      </div>
     </div>
   );
 }
