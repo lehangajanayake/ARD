@@ -4,7 +4,7 @@ import type { TelemetrySample } from "../types/telemetry";
 export type WidgetKind = "map" | "chart" | "status";
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "demo" | "error";
 export type PlaybackMode = "live" | "replay";
-export type TelemetrySource = "live" | "demo";
+export type TelemetrySource = "live";
 
 export type PlaybackState = {
   mode: PlaybackMode;
@@ -46,8 +46,8 @@ const defaultWidgets: WidgetLayout[] = [
 ];
 
 let state: DashboardState = {
-  telemetrySource: "demo",
-  connectionState: "demo",
+  telemetrySource: "live",
+  connectionState: "disconnected",
   latest: null,
   history: [],
   liveLatest: null,
@@ -144,7 +144,7 @@ export const dashboardActions = {
       return {
         ...base,
         telemetrySource,
-        connectionState: telemetrySource === "demo" ? "demo" : "disconnected",
+        connectionState: "disconnected",
       };
     });
   },
@@ -153,8 +153,8 @@ export const dashboardActions = {
   },
   pushTelemetry(sample: TelemetrySample) {
     setState((current) => {
-      const liveHistory = [...current.liveHistory, sample].slice(-180);
-      const archive = [...current.archive, sample].slice(-5000);
+      const liveHistory = [...current.liveHistory, sample];
+      const archive = [...current.archive, sample];
 
       if (current.playback.mode === "replay") {
         return {

@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import csv
+import math
+import os
+import sys
 import time
+import threading
+import select
+import tty
+import termios
+from pathlib import Path
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
@@ -10,7 +19,11 @@ from .pipeline.telemetry_pipeline import TelemetryPipeline
 from .pipeline.recorder import TelemetryRecorder
 
 app = Flask(__name__)
-CORS(app, origins=["http://127.0.0.1:5173", "*"], supports_credentials=True)
+CORS(
+    app,
+    origins=["http://127.0.0.1:5173", "http://localhost:5173", "*"],
+    supports_credentials=True,
+)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 serial_source = SerialSource(baudrate=115200)
@@ -19,6 +32,81 @@ pipeline = TelemetryPipeline(recorder=TelemetryRecorder("flight_log.csv"))
 stream_task = None
 _simulation_enabled = True  # Enable simulated telemetry when no real data
 _simulation_start_time = time.time()  # Track when simulation started
+_simulation_rows = []
+_simulation_index = 0
+
+
+def _load_simulation_rows() -> list[dict]:
+    csv_path = Path(__file__).resolve().parents[1] / "TestData" / "generated_blue_raven_test_data.csv"
+    rows: list[dict] = []
+
+    if not csv_path.exists():
+        return rows
+
+    with csv_path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            rows.append(row)
+
+    return rows
+
+
+def _float_value(row: dict, key: str, default: float = 0.0) -> float:
+    value = row.get(key, "")
+    if value in (None, ""):
+        return default
+    return float(value)
+
+
+def _build_envelope_from_row(row: dict) -> dict:
+    north_m = _float_value(row, "derived_north_m")
+    east_m = _float_value(row, "derived_east_m")
+    azimuth_deg = (math.degrees(math.atan2(east_m, max(north_m, 1e-9))) + 360.0) % 360.0
+    temperature_c = (_float_value(row, "Temperature_(F)") - 32.0) * (5.0 / 9.0)
+
+    return {
+        "type": "telemetry",
+        "timestamp": int(time.time() * 1000),
+        "packet": {
+            "time": int(round(_float_value(row, "Flight_Time_(s)") * 1000.0)),
+            "altitude": _float_value(row, "derived_altitude_m", _float_value(row, "Baro_Altitude_ASL_(feet)") * 0.3048),
+            "bmpTemp": temperature_c,
+            "imuTemp": temperature_c + 0.8,
+            "pressure": _float_value(row, "Baro_Press_(atm)") * 101325.0,
+            "accX": _float_value(row, "Accel_X"),
+            "accY": _float_value(row, "Accel_Y"),
+            "accZ": _float_value(row, "Accel_Z"),
+            "angVelX": _float_value(row, "Gyro_X"),
+            "angVelY": _float_value(row, "Gyro_Y"),
+            "angVelZ": _float_value(row, "Gyro_Z"),
+        },
+        "derived": {
+            "velocity": _float_value(row, "derived_speed_mps"),
+            "downrange_m": north_m,
+            "east_m": east_m,
+            "north_m": north_m,
+            "latitude": _float_value(row, "derived_latitude"),
+            "longitude": _float_value(row, "derived_longitude"),
+            "azimuth_deg": azimuth_deg,
+        },
+    }
+
+
+def _next_simulated_envelope() -> dict:
+    global _simulation_index
+
+    if not _simulation_rows:
+        from .telemetry import build_sample, sample_to_dict
+
+        elapsed_ms = int((time.time() - _simulation_start_time) * 1000)
+        return sample_to_dict(build_sample(elapsed_ms))
+
+    row = _simulation_rows[_simulation_index]
+    _simulation_index = (_simulation_index + 1) % len(_simulation_rows)
+    return _build_envelope_from_row(row)
+
+
+_simulation_rows = _load_simulation_rows()
 
 
 @app.route("/ports", methods=["GET"])
@@ -87,9 +175,51 @@ def health():
 @app.route("/telemetry/restart", methods=["POST"])
 def restart_simulation():
     """Restart the simulation from the beginning"""
-    global _simulation_start_time
+    global _simulation_start_time, _simulation_index
     _simulation_start_time = time.time()
+    _simulation_index = 0
     return jsonify({"success": True, "message": "Simulation restarted"})
+
+
+def _stdin_watcher():
+    """Background watcher that listens to stdin and restarts simulation on 'R' or 'r'.
+
+    Supports single-key presses when stdin is a TTY (no Enter required). When
+    stdin is not a TTY (e.g., redirected), falls back to line-based input.
+    """
+    global _simulation_start_time, _simulation_index
+
+    def do_restart():
+        global _simulation_start_time, _simulation_index
+        _simulation_start_time = time.time()
+        _simulation_index = 0
+        try:
+            socketio.emit("simulation_restarted", {"success": True}, broadcast=True)
+        except Exception:
+            pass
+        print("Simulation restarted via keyboard")
+
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setcbreak(fd)
+                while True:
+                    rlist, _, _ = select.select([sys.stdin], [], [], 0.2)
+                    if rlist:
+                        ch = sys.stdin.read(1)
+                        if ch and ch.lower() == "r":
+                            do_restart()
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        else:
+            # Fallback: line-based reading (requires Enter)
+            for line in sys.stdin:
+                if "r" in line.lower():
+                    do_restart()
+    except Exception as e:
+        print(f"stdin watcher exited: {e}")
 
 
 @socketio.on("connect")
@@ -118,8 +248,9 @@ def request_telemetry():
 @socketio.on("restart_simulation")
 def handle_restart_simulation():
     """Socket.IO handler to restart simulation from client"""
-    global _simulation_start_time
+    global _simulation_start_time, _simulation_index
     _simulation_start_time = time.time()
+    _simulation_index = 0
     emit("simulation_restarted", {"success": True}, broadcast=True)
 
 
@@ -141,26 +272,15 @@ def stream_simulated_telemetry():
     """
     Generate simulated telemetry for testing/demo purposes
     """
-    from .telemetry import build_sample, sample_to_dict
-    
-    start = time.time()
-    MAX_ALTITUDE_FEET = 11_000.0
-    FEET_TO_METERS = 0.3048
-    MAX_ALTITUDE_METERS = MAX_ALTITUDE_FEET * FEET_TO_METERS
-    
     while _simulation_enabled:
         try:
-            elapsed_ms = int((time.time() - start) * 1000)
-            sample = build_sample(elapsed_ms)
-            
-            # Restart simulation at max altitude
-            if sample.packet.altitude >= MAX_ALTITUDE_METERS:
-                start = time.time()
-                elapsed_ms = 0
-                sample = build_sample(elapsed_ms)
-            
-            socketio.emit("telemetry_data", sample_to_dict(sample))
-            socketio.sleep(0.1)
+            sample = _next_simulated_envelope()
+            socketio.emit("telemetry_data", sample)
+
+            if _simulation_rows:
+                socketio.sleep(0.02)
+            else:
+                socketio.sleep(0.1)
         except Exception as e:
             print(f"Error in simulated telemetry: {e}")
             socketio.sleep(0.5)
@@ -171,26 +291,17 @@ def stream_telemetry():
     Main telemetry stream - uses real data or falls back to simulation
     """
     global _simulation_start_time
-    from .telemetry import build_sample, sample_to_dict
-    
-    MAX_ALTITUDE_FEET = 11_000.0
-    FEET_TO_METERS = 0.3048
-    MAX_ALTITUDE_METERS = MAX_ALTITUDE_FEET * FEET_TO_METERS
     
     while True:
         if _simulation_enabled:
             try:
-                elapsed_ms = int((time.time() - _simulation_start_time) * 1000)
-                sample = build_sample(elapsed_ms)
-                
-                # Restart simulation at max altitude
-                if sample.packet.altitude >= MAX_ALTITUDE_METERS:
-                    _simulation_start_time = time.time()
-                    elapsed_ms = 0
-                    sample = build_sample(elapsed_ms)
-                
-                socketio.emit("telemetry_data", sample_to_dict(sample))
-                socketio.sleep(0.1)
+                sample = _next_simulated_envelope()
+                socketio.emit("telemetry_data", sample)
+
+                if _simulation_rows:
+                    socketio.sleep(0.02)
+                else:
+                    socketio.sleep(0.1)
             except Exception as e:
                 print(f"Error in simulated telemetry: {e}")
                 socketio.sleep(0.5)
@@ -198,6 +309,14 @@ def stream_telemetry():
             # Real serial data stream
             socketio.sleep(0.01)
 
+
+if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or __name__ == "__main__":
+    # Start stdin watcher in the reloader child or when running directly.
+    try:
+        socketio.start_background_task(_stdin_watcher)
+    except Exception:
+        watcher_thread = threading.Thread(target=_stdin_watcher, daemon=True)
+        watcher_thread.start()
 
 if __name__ == "__main__":
     socketio.run(app, debug=True, host="127.0.0.1", port=5000)
