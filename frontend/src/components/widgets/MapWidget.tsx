@@ -49,92 +49,18 @@ function buildPointGeometry(longitude: number, latitude: number, altitude: numbe
 }
 
 // ---------------------------------------------------------------------------
-// Three.js rocket mesh built from geometry primitives.
-// "Up" in the Three.js scene is +Y. The render transform rotates the whole
-// scene so Three.js +Y maps to Mapbox's altitude (Z) axis.
+// Simple red dot placeholder — no directional telemetry (pitch/yaw/roll), so
+// a directionless marker is more honest than an oriented model.
+// Replace this with a proper GLB model once attitude telemetry is available.
 // ---------------------------------------------------------------------------
 function buildRocketMesh(): THREE.Group {
   const group = new THREE.Group();
 
-  const bodyMat = new THREE.MeshPhongMaterial({
-    color: 0xe0e0e0,
-    emissive: 0xff5500,
-    emissiveIntensity: 0.3,
-    shininess: 80,
-  });
-  const accentMat = new THREE.MeshPhongMaterial({
-    color: 0xff6622,
-    emissive: 0xff3300,
-    emissiveIntensity: 0.55,
-    shininess: 60,
-  });
+  const mat = new THREE.MeshBasicMaterial({ color: 0xff2200 });
 
-  // Body cylinder: height 2.5 units, radius 0.4; centred at scene origin
-  group.add(new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.42, 2.5, 14), bodyMat));
-
-  // Nose cone: THREE.ConeGeometry tip is at +Y; align base to top of body
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1.8, 14), bodyMat);
-  nose.position.y = 2.5 / 2 + 1.8 / 2; // body-half (1.25) + nose-half (0.9) = 2.15
-  group.add(nose);
-
-  // Nozzle bell at the base
-  const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.15, 0.5, 10), accentMat);
-  nozzle.position.y = -(2.5 / 2 + 0.5 / 2); // −1.5
-  group.add(nozzle);
-
-  // Four fins evenly spaced around the base of the body
-  for (let i = 0; i < 4; i++) {
-    const angle = (i * Math.PI) / 2;
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.85, 0.55), accentMat);
-    fin.position.set(
-      Math.cos(angle) * 0.44,
-      -(2.5 / 2 - 0.42), // near body base (≈ −0.83)
-      Math.sin(angle) * 0.44,
-    );
-    fin.rotation.y = angle;
-    group.add(fin);
-  }
-
-  // Total span: nose-tip ≈ +3.05, nozzle-bottom ≈ −1.75 → ~4.8 units
-  return group;
-}
-
-// Exhaust plume: two translucent cones trailing below the nozzle exit.
-// Visibility is toggled in the render function based on flight phase.
-function buildPlumeMesh(): THREE.Group {
-  const group = new THREE.Group();
-
-  // Outer glow envelope — wide, orange, semi-transparent
-  const outerCone = new THREE.Mesh(
-    new THREE.ConeGeometry(0.55, 3.2, 10, 1, true),
-    new THREE.MeshBasicMaterial({
-      color: 0xff6600,
-      transparent: true,
-      opacity: 0.55,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }),
-  );
-  // rotation.x = π flips the cone so its wide end (radius 0.55) is at the nozzle
-  // exit (top) and the apex points downward, trailing below the rocket
-  outerCone.rotation.x = Math.PI;
-  outerCone.position.y = -(2.5 / 2 + 0.5 + 3.2 / 2); // below nozzle bottom ≈ −3.35
-  group.add(outerCone);
-
-  // Bright inner core — narrow, yellow-white
-  const innerCone = new THREE.Mesh(
-    new THREE.ConeGeometry(0.18, 2.2, 6, 1, true),
-    new THREE.MeshBasicMaterial({
-      color: 0xffee55,
-      transparent: true,
-      opacity: 0.88,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }),
-  );
-  innerCone.rotation.x = Math.PI;
-  innerCone.position.y = -(2.5 / 2 + 0.5 + 2.2 / 2); // ≈ −2.85
-  group.add(innerCone);
+  // Single sphere marker centered on the telemetry position.
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 12), mat);
+  group.add(dot);
 
   return group;
 }
@@ -154,7 +80,6 @@ export function MapWidget() {
     mercY: number;
     mercZ: number;
     headingRad: number;
-    showPlume: boolean;
   } | null>(null);
 
   // The Three.js Line mesh for the 3D trajectory trail.
@@ -177,14 +102,23 @@ export function MapWidget() {
 
     try {
       mapboxgl.accessToken = token;
+      // Warm up shared workers/resources early so initial tile fetches start faster.
+      // Optional chaining keeps this safe across Mapbox GL JS versions.
+      (mapboxgl as any).prewarm?.();
 
       const map = new mapboxgl.Map({
         container: containerRef.current,
-        style: "mapbox://styles/mapbox/dark-v11",
+        style: "mapbox://styles/mapbox/standard-satellite",
         center: [DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude],
         zoom: DEFAULT_CENTER.zoom,
         pitch: 60,
         bearing: 0,
+        // Keep more tiles in memory so the White Cliffs flight area stays warm while
+        // the chase camera moves during ascent/descent.
+        minTileCacheSize: 1200,
+        maxTileCacheSize: 4000,
+        // Prefer cached tiles over immediate revalidation while visualizing a run.
+        refreshExpiredTiles: false,
       });
 
       map.on("load", () => {
@@ -237,7 +171,6 @@ export function MapWidget() {
           rocketScene: null as THREE.Scene | null, // local space, placed via model matrix
           trailScene: null as THREE.Scene | null,  // vertices in Mercator world space
           renderer: null as THREE.WebGLRenderer | null,
-          plumeGroup: null as THREE.Group | null,
         };
 
         // Capture stable ref objects so the render/onAdd callbacks close over them.
@@ -256,9 +189,6 @@ export function MapWidget() {
             // --- Rocket scene: local Three.js space, transformed per-frame via model matrix ---
             layerState.rocketScene = new THREE.Scene();
             const rocketGroup = buildRocketMesh();
-            const plumeGroup = buildPlumeMesh();
-            rocketGroup.add(plumeGroup);
-            layerState.plumeGroup = plumeGroup;
             layerState.rocketScene.add(rocketGroup);
             // Warm-white angled sun + ochre ambient fill for arid midday light
             const sun = new THREE.DirectionalLight(0xfff0e0, 2.5);
@@ -303,11 +233,10 @@ export function MapWidget() {
             layerState.rocketScene = null;
             layerState.trailScene = null;
             layerState.renderer = null;
-            layerState.plumeGroup = null;
           },
 
           render(_gl: WebGLRenderingContext, matrix: number[]) {
-            const { camera, rocketScene, trailScene, renderer, plumeGroup } = layerState;
+            const { camera, rocketScene, trailScene, renderer } = layerState;
             if (!camera || !rocketScene || !trailScene || !renderer) return;
 
             // Mapbox supplies a column-major 4×4 float array: Mercator world coords → clip space
@@ -325,7 +254,7 @@ export function MapWidget() {
             const pos = rocketPosRef.current;
             if (!pos) return;
 
-            const { mercX, mercY, mercZ, headingRad, showPlume } = pos;
+            const { mercX, mercY, mercZ, headingRad } = pos;
 
             // -----------------------------------------------------------------------
             // Zoom-adaptive scale — keeps the rocket at ~80 CSS pixels tall across
@@ -343,7 +272,7 @@ export function MapWidget() {
             // -----------------------------------------------------------------------
             const zoom = map.getZoom();
             const TARGET_ROCKET_PX = 80;
-            const scale = TARGET_ROCKET_PX / (ROCKET_MODEL_HEIGHT_UNITS * Math.pow(2, zoom) * 512);
+            const scale = TARGET_ROCKET_PX / (ROCKET_MODEL_HEIGHT_UNITS * Math.pow(2, zoom) * 1024);
 
             // Model transform (applied right-to-left per vertex through the chain):
             //
@@ -361,10 +290,6 @@ export function MapWidget() {
               .multiply(new THREE.Matrix4().makeRotationY(-headingRad));
 
             camera.projectionMatrix = mapMatrix.clone().multiply(modelMatrix);
-
-            if (plumeGroup) {
-              plumeGroup.visible = showPlume;
-            }
 
             // resetState restores any WebGL state Three.js modified so Mapbox renders correctly
             renderer.resetState();
@@ -477,15 +402,12 @@ export function MapWidget() {
       // it varies with cos(lat) and must be re-fetched every update for correct sizing.
       if (Number.isFinite(lon) && Number.isFinite(lat)) {
         const coord = mapboxgl.MercatorCoordinate.fromLngLat({ lng: lon, lat }, altitude);
-        // Powered ascent heuristic: boost phase ends ~6 300 ms; velocity threshold filters GPS jumps
-        const isPowered = latest.packet.time <= 6300 && latest.derived.velocity > 30;
 
         rocketStateRef.current = {
           mercX: coord.x,
           mercY: coord.y,
           mercZ: coord.z,
           headingRad: (heading * Math.PI) / 180,
-          showPlume: isPowered,
         };
 
         map.triggerRepaint();

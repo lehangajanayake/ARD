@@ -149,6 +149,26 @@ flask --app app.main run --debug
 
 Backend starts on `http://127.0.0.1:5000` with Socket.IO support.
 
+### Backend Tests
+
+From `backend/`:
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+Test layers:
+- Parser unit tests: fast, pure tests for CSV/binary parse behavior and malformed input.
+- Reader/API integration tests: replay fixture serial lines through serial source -> parser -> pipeline -> API/WebSocket emissions.
+- Hardware-in-the-loop test: excluded by default and only runs when explicitly requested.
+
+Run hardware-in-the-loop serial test (requires connected Ground Station):
+
+```bash
+GROUND_STATION_PORT=/dev/ttyUSB0 pytest -m hardware -k ground_station
+```
+
 ### Frontend Setup
 
 ```bash
