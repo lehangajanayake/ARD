@@ -62,11 +62,18 @@ def test_reader_parser_to_api_and_websocket_normal_flow(tmp_path: Path, monkeypa
     stats = client.get("/telemetry/stats").get_json()
 
     assert latest["success"] is True
-    assert latest["data"]["packet_id"] == 3
+    assert latest["data"]["type"] == "telemetry"
+    assert latest["data"]["packet"]["time"] == 200
+    assert latest["data"]["quality"]["packet_id"] == 3
     assert history["success"] is True
     assert len(history["data"]) == 3
+    assert history["data"][0]["packet"]["altitude"] == 95.0
     assert stats["success"] is True
     assert stats["data"]["total_frames"] == 3
+
+    assert telemetry_events[0]["type"] == "telemetry"
+    assert telemetry_events[0]["packet"]["time"] == 0
+    assert telemetry_events[0]["derived"]["latitude"] < 0
 
     with output_path.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -93,6 +100,7 @@ def test_reader_path_handles_disconnect_then_reconnect(tmp_path: Path, monkeypat
     telemetry_events = [payload for name, payload in events if name == "telemetry_data"]
     assert len(telemetry_events) == 2
     assert source.reconnect_count == 1
+    assert telemetry_events[-1]["quality"]["packet_id"] == 2
 
     with output_path.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))

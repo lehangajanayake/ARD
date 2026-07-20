@@ -186,6 +186,26 @@ npm run dev
 
 Frontend starts on `http://localhost:5173` and auto-connects to `http://localhost:5000`.
 
+### Dev Startup Checks
+
+Before opening the dashboard, run a quick preflight check from the project root:
+
+```bash
+bash scripts/dev_startup_checks.sh
+```
+
+What it verifies:
+- Exactly one frontend dev server is listening on port 5173
+- No accidental fallback frontend server is listening on port 5174
+- Backend health endpoint is reachable on port 5000
+- Socket.IO polling handshake succeeds and CORS allows the frontend origin
+
+Optional environment overrides:
+
+```bash
+BACKEND_URL=http://127.0.0.1:5000 FRONTEND_PORT=5173 FRONTEND_ORIGIN=http://localhost:5173 bash scripts/dev_startup_checks.sh
+```
+
 ## Using Real Telemetry
 
 The backend is ready for real serial data. Two options:

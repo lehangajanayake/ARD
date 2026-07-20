@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "preflight": "bash ../scripts/dev_startup_checks.sh",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview"

@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { dashboardActions } from "../store/useDashboardStore";
 import { normalizeTelemetryMessage } from "../lib/telemetry";
 import { io, Socket } from "socket.io-client";
+import type { TelemetryStatus } from "../types/telemetry";
 
 const SOCKET_URL = import.meta.env.VITE_TELEMETRY_WS_URL ?? "http://127.0.0.1:5000";
 
@@ -64,6 +65,13 @@ export function useTelemetryFeed() {
           }
         } catch (err) {
           console.error("✗ Telemetry parse error:", err);
+          dashboardActions.setConnectionState("error");
+        }
+      });
+
+      socket.on("telemetry_status", (data: TelemetryStatus) => {
+        dashboardActions.setBackendStatus(data);
+        if (data.stream === "error") {
           dashboardActions.setConnectionState("error");
         }
       });
