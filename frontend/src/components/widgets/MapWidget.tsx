@@ -26,7 +26,7 @@ function clamp(value: number, min: number, max: number) {
 
 // Zoom range tuned for a 0–3 050 m sub-orbital hop: close on the pad, open at apogee
 function computeRocketZoom(altitudeMeters: number) {
-  const t = clamp(altitudeMeters / 3050, 0, 1);
+  const t = clamp(altitudeMeters / 10000, 0, 1);
   return 14.5 - t * 3.0; // 14.5 on the pad → 11.5 near apogee
 }
 
@@ -36,6 +36,29 @@ function computeRocketZoom(altitudeMeters: number) {
 function computeRocketPitch(altitudeMeters: number) {
   const t = clamp(altitudeMeters / 3050, 0, 1);
   return 70 - t * 32; // 70° on the pad → 38° near apogee
+}
+
+function computeSpiralChaseCamera(altitudeMeters: number, timeMs: number, headingDeg: number) {
+  const t = clamp(altitudeMeters / 3050, 0, 1);
+
+  // ~2.7 full orbits over an ~80 s mission timeline.
+  const orbitDeg = (timeMs * 0.012) % 360;
+  const orbitRad = (orbitDeg * Math.PI) / 180;
+
+  // Keep the rocket pinned at viewport center; the spiral feel comes from bearing,
+  // pitch, and zoom evolution rather than lateral screen offset.
+  const offsetX = 0;
+  const offsetY = 0;
+
+  // Blend real azimuth with a cinematic yaw sweep.
+  const bearing = headingDeg + orbitDeg * 0.16;
+
+  return {
+    zoom: computeRocketZoom(altitudeMeters),
+    pitch: computeRocketPitch(altitudeMeters),
+    bearing,
+    offset: [offsetX, offsetY] as [number, number],
+  };
 }
 
 function buildPointGeometry(longitude: number, latitude: number, altitude: number, heading = 0) {
@@ -463,12 +486,14 @@ export function MapWidget() {
         }
         lastCameraMoveAtRef.current = now;
 
+        const cam = computeSpiralChaseCamera(altitude, latest.packet.time, heading);
+
         mapRef.current.easeTo({
           center: [lon, lat],
-          zoom: computeRocketZoom(altitude),
-          bearing: heading,
-          pitch: computeRocketPitch(altitude),
-          offset: [0, -90],
+          zoom: cam.zoom,
+          bearing: cam.bearing,
+          pitch: cam.pitch,
+          offset: cam.offset,
           duration: 260,
           easing: (t) => 1 - Math.pow(1 - t, 3),
           essential: true,
@@ -487,14 +512,14 @@ export function MapWidget() {
     const lat = latest.derived.latitude;
     const heading = Number.isFinite(latest.derived.azimuth_deg) ? latest.derived.azimuth_deg : 0;
     const alt = latest.packet.altitude ?? 1000;
-    const zoom = computeRocketZoom(alt);
+    const cam = computeSpiralChaseCamera(alt, latest.packet.time, heading);
 
     map.easeTo({
       center: [lon, lat],
-      zoom,
-      bearing: heading,
-      pitch: computeRocketPitch(alt),
-      offset: [0, -90],
+      zoom: cam.zoom,
+      bearing: cam.bearing,
+      pitch: cam.pitch,
+      offset: cam.offset,
       duration: 300,
       easing: (t) => 1 - Math.pow(1 - t, 3),
       essential: true,
