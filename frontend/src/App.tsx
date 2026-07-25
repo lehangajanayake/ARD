@@ -9,6 +9,20 @@ import { StatusWidget } from "./components/widgets/StatusWidget";
 import { TelemetryPlaybackControls } from "./components/TelemetryPlaybackControls";
 import { ModelDebugViewer } from "./components/ModelDebugViewer";
 
+function openWindowRoute(path: string, name: string, width: number, height: number) {
+  const features = [
+    `popup=yes`,
+    `width=${width}`,
+    `height=${height}`,
+    `left=80`,
+    `top=80`,
+    `resizable=yes`,
+    `scrollbars=yes`,
+  ].join(",");
+
+  window.open(path, name, features);
+}
+
 function FullScreenWidget() {
   const widgets = useDashboardStore((state) => state.widgets);
   const fullScreenWidget = widgets.find((widget) => widget.fullScreen) ?? null;
@@ -91,6 +105,9 @@ function DashboardPage() {
         </div>
         <div className="topbar-actions">
           <button data-primary="true" onClick={() => dashboardActions.setTelemetrySource("live")}>Backend feed</button>
+          <button onClick={() => openWindowRoute("/window/map", "ard-map-window", 1280, 900)}>Open map window</button>
+          <button onClick={() => openWindowRoute("/window/chart", "ard-chart-window", 1100, 700)}>Open chart window</button>
+          <button onClick={() => openWindowRoute("/window/status", "ard-status-window", 700, 820)}>Open status window</button>
           <button onClick={() => dashboardActions.addWidget("map")}>Add map</button>
           <button onClick={() => dashboardActions.addWidget("chart")}>Add chart</button>
           <button onClick={() => dashboardActions.addWidget("status")}>Add status</button>
@@ -107,11 +124,83 @@ function DashboardPage() {
   );
 }
 
+function WindowMapPage() {
+  useTelemetryFeed({ waitForMapReady: true });
+  useTelemetryPlayback();
+
+  return (
+    <div style={{ width: "100vw", height: "100vh", margin: 0, padding: 0, overflow: "hidden" }}>
+      <MapWidget />
+    </div>
+  );
+}
+
+function WindowChartPage() {
+  useTelemetryFeed();
+  useTelemetryPlayback();
+
+  return (
+    <main className="app-shell standalone-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">ARD Ground Station</p>
+          <h1>Chart Window</h1>
+        </div>
+      </header>
+      <section className="standalone-widget-stage">
+        <article className="standalone-widget-card">
+          <div className="widget-header">
+            <div>
+              <div className="widget-title">Velocity & Altitude</div>
+              <div className="widget-subtitle">CHART</div>
+            </div>
+          </div>
+          <div className="widget-body">
+            <TelemetryChartWidget />
+          </div>
+        </article>
+      </section>
+    </main>
+  );
+}
+
+function WindowStatusPage() {
+  useTelemetryFeed();
+  useTelemetryPlayback();
+
+  return (
+    <main className="app-shell standalone-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">ARD Ground Station</p>
+          <h1>Status Window</h1>
+        </div>
+      </header>
+      <section className="standalone-widget-stage">
+        <article className="standalone-widget-card">
+          <div className="widget-header">
+            <div>
+              <div className="widget-title">Telemetry Status</div>
+              <div className="widget-subtitle">STATUS</div>
+            </div>
+          </div>
+          <div className="widget-body">
+            <StatusWidget />
+          </div>
+        </article>
+      </section>
+    </main>
+  );
+}
+
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<DashboardPage />} />
       <Route path="/widget/:widgetId" element={<StandaloneWidgetPage />} />
+      <Route path="/window/map" element={<WindowMapPage />} />
+      <Route path="/window/chart" element={<WindowChartPage />} />
+      <Route path="/window/status" element={<WindowStatusPage />} />
       <Route path="/debug/model" element={<ModelDebugViewer />} />
       <Route path="*" element={<DashboardPage />} />
     </Routes>

@@ -13,6 +13,12 @@ const ROCKET_MODEL_HEIGHT_UNITS = 4.5;
 // Altitude-gradient trail colours: launch orange at sea level → plasma cyan at apogee.
 const LAUNCH_ORANGE = "#ff8a1f";
 const PLASMA_CYAN = "#31e6ff";
+const MAP_READY_EVENT = "ard:map-ready";
+
+function markMapReady() {
+  (window as any).__ardMapReady = true;
+  window.dispatchEvent(new CustomEvent(MAP_READY_EVENT));
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -87,6 +93,14 @@ export function MapWidget() {
   // is written by the history useEffect so the trail renders at true flight altitude.
   const trailLineRef = useRef<THREE.Line | null>(null);
 
+  // Timestamp (ms) of the last camera easeTo() call. Telemetry can arrive as fast as
+  // every ~20ms, but re-centering the camera on every sample never lets any easeTo
+  // transition finish — Mapbox keeps cancelling in-flight tile requests for the
+  // viewport it never settles on, which looks like tiles "not loading". Throttling
+  // camera moves (not marker/trail updates, which stay per-sample) fixes this.
+  const lastCameraMoveAtRef = useRef<number>(0);
+  const CAMERA_MOVE_MIN_INTERVAL_MS = 250;
+
   const history = useDashboardStore((state) => state.history);
   const latest = useDashboardStore((state) => state.latest);
 
@@ -108,11 +122,13 @@ export function MapWidget() {
 
       const map = new mapboxgl.Map({
         container: containerRef.current,
-        style: "mapbox://styles/mapbox/standard-satellite",
+        // Use a stable raster-first style to avoid intermittent vector tile 404 noise.
+        style: "mapbox://styles/mapbox/satellite-v9",
         center: [DEFAULT_CENTER.longitude, DEFAULT_CENTER.latitude],
         zoom: DEFAULT_CENTER.zoom,
         pitch: 60,
         bearing: 0,
+        projection: "mercator",
         // Keep more tiles in memory so the White Cliffs flight area stays warm while
         // the chase camera moves during ascent/descent.
         minTileCacheSize: 1200,
@@ -122,6 +138,9 @@ export function MapWidget() {
       });
 
       map.on("load", () => {
+        // Keep projection fixed to mercator to avoid gray-globe transitions on slow tile loads.
+        map.setProjection("mercator");
+
         // White Cliffs is flat outback — no terrain drama; leave exaggeration at 1.0
         if (!map.getSource("mapbox-dem")) {
           map.addSource("mapbox-dem", {
@@ -304,6 +323,11 @@ export function MapWidget() {
         mapRef.current = map;
         setError(null);
         setIsLoading(false);
+
+        // Wait until the first idle frame so style/terrain/layers are fully settled.
+        map.once("idle", () => {
+          markMapReady();
+        });
       });
 
       map.on("error", (e) => {
@@ -326,6 +350,8 @@ export function MapWidget() {
         mapRef.current.remove();
         mapRef.current = null;
       }
+
+      (window as any).__ardMapReady = false;
     };
   }, []);
 
@@ -427,6 +453,15 @@ export function MapWidget() {
         if (!mapRef.current || !autoFollow) {
           return;
         }
+
+        // Throttle: skip this camera move if the previous easeTo hasn't had time
+        // to settle yet. This lets tile requests for a viewport actually complete
+        // instead of being aborted by the next reposition a few ms later.
+        const now = performance.now();
+        if (now - lastCameraMoveAtRef.current < CAMERA_MOVE_MIN_INTERVAL_MS) {
+          return;
+        }
+        lastCameraMoveAtRef.current = now;
 
         mapRef.current.easeTo({
           center: [lon, lat],
