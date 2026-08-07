@@ -1,5 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
-import type { TelemetrySample } from "../types/telemetry";
+import type { TelemetrySample, TelemetryStatus } from "../types/telemetry";
 
 export type WidgetKind = "map" | "chart" | "status";
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "demo" | "error";
@@ -28,6 +28,7 @@ export type WidgetLayout = {
 type DashboardState = {
   telemetrySource: TelemetrySource;
   connectionState: ConnectionState;
+  backendStatus: TelemetryStatus | null;
   latest: TelemetrySample | null;
   history: TelemetrySample[];
   liveLatest: TelemetrySample | null;
@@ -40,7 +41,6 @@ type DashboardState = {
 type DashboardListener = () => void;
 
 const defaultWidgets: WidgetLayout[] = [
-  { id: "map", kind: "map", title: "Flight Map", x: 24, y: 24, width: 680, height: 520, docked: true, fullScreen: true },
   { id: "chart", kind: "chart", title: "Velocity & Altitude", x: 728, y: 24, width: 420, height: 260, docked: true, fullScreen: false },
   { id: "status", kind: "status", title: "Telemetry Status", x: 728, y: 308, width: 420, height: 236, docked: true, fullScreen: false },
 ];
@@ -48,6 +48,7 @@ const defaultWidgets: WidgetLayout[] = [
 let state: DashboardState = {
   telemetrySource: "live",
   connectionState: "disconnected",
+  backendStatus: null,
   latest: null,
   history: [],
   liveLatest: null,
@@ -109,6 +110,7 @@ function resolveLiveView(current: DashboardState) {
 function resetTelemetryPlayback(current: DashboardState) {
   return {
     ...current,
+    backendStatus: null,
     latest: null,
     history: [],
     liveLatest: null,
@@ -150,6 +152,9 @@ export const dashboardActions = {
   },
   setConnectionState(connectionState: ConnectionState) {
     setState((current) => ({ ...current, connectionState }));
+  },
+  setBackendStatus(status: TelemetryStatus) {
+    setState((current) => ({ ...current, backendStatus: status }));
   },
   pushTelemetry(sample: TelemetrySample) {
     setState((current) => {

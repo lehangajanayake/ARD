@@ -2,8 +2,11 @@ import { useEffect, useRef } from "react";
 import { dashboardActions } from "../store/useDashboardStore";
 import { normalizeTelemetryMessage } from "../lib/telemetry";
 import { io, Socket } from "socket.io-client";
+import type { TelemetryStatus } from "../types/telemetry";
 
 const SOCKET_URL = import.meta.env.VITE_TELEMETRY_WS_URL ?? "http://127.0.0.1:5000";
+const MAP_READY_EVENT = "ard:map-ready";
+const MAP_READY_TIMEOUT_MS = 10_000;
 
 async function restartSimulation(reason: string) {
   try {
@@ -25,13 +28,19 @@ async function restartSimulation(reason: string) {
   }
 }
 
-export function useTelemetryFeed() {
+type UseTelemetryFeedOptions = {
+  waitForMapReady?: boolean;
+};
+
+export function useTelemetryFeed(options: UseTelemetryFeedOptions = {}) {
+  const { waitForMapReady = false } = options;
   const retryRef = useRef(0);
 
   useEffect(() => {
     let active = true;
     let socket: Socket | null = null;
     let cleanupKeyListener: (() => void) | null = null;
+    let mapReadyTimer: number | null = null;
 
     const connect = () => {
       if (!active) {
@@ -68,6 +77,13 @@ export function useTelemetryFeed() {
         }
       });
 
+      socket.on("telemetry_status", (data: TelemetryStatus) => {
+        dashboardActions.setBackendStatus(data);
+        if (data.stream === "error") {
+          dashboardActions.setConnectionState("error");
+        }
+      });
+
       socket.on("connect_error", () => {
         dashboardActions.setConnectionState("error");
       });
@@ -97,12 +113,46 @@ export function useTelemetryFeed() {
       void restartSimulation("page load");
     };
 
-    connect();
+    const startConnection = () => {
+      if (!active) {
+        return;
+      }
+      connect();
+    };
+
+    if (waitForMapReady) {
+      if ((window as any).__ardMapReady) {
+        startConnection();
+      } else {
+        const handleMapReady = () => {
+          window.removeEventListener(MAP_READY_EVENT, handleMapReady);
+          if (mapReadyTimer !== null) {
+            window.clearTimeout(mapReadyTimer);
+            mapReadyTimer = null;
+          }
+          startConnection();
+        };
+
+        window.addEventListener(MAP_READY_EVENT, handleMapReady, { once: true });
+
+        // Fallback so telemetry still works if map never reaches ready state.
+        mapReadyTimer = window.setTimeout(() => {
+          window.removeEventListener(MAP_READY_EVENT, handleMapReady);
+          console.warn("Map readiness timeout reached, connecting telemetry anyway");
+          startConnection();
+        }, MAP_READY_TIMEOUT_MS);
+      }
+    } else {
+      startConnection();
+    }
 
     return () => {
       active = false;
+      if (mapReadyTimer !== null) {
+        window.clearTimeout(mapReadyTimer);
+      }
       cleanupKeyListener?.();
       socket?.disconnect();
     };
-  }, []);
+  }, [waitForMapReady]);
 }

@@ -147,6 +147,26 @@ flask --app app.main run --debug
 
 Backend starts on `http://127.0.0.1:5000` with Socket.IO support.
 
+### Backend Tests
+
+From `backend/`:
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+Test layers:
+- Parser unit tests: fast, pure tests for CSV/binary parse behavior and malformed input.
+- Reader/API integration tests: replay fixture serial lines through serial source -> parser -> pipeline -> API/WebSocket emissions.
+- Hardware-in-the-loop test: excluded by default and only runs when explicitly requested.
+
+Run hardware-in-the-loop serial test (requires connected Ground Station):
+
+```bash
+GROUND_STATION_PORT=/dev/ttyUSB0 pytest -m hardware -k ground_station
+```
+
 ### Frontend Setup
 
 ```bash
@@ -163,6 +183,26 @@ npm run dev
 ```
 
 Frontend starts on `http://localhost:5173` and auto-connects to `http://localhost:5000`.
+
+### Dev Startup Checks
+
+Before opening the dashboard, run a quick preflight check from the project root:
+
+```bash
+bash scripts/dev_startup_checks.sh
+```
+
+What it verifies:
+- Exactly one frontend dev server is listening on port 5173
+- No accidental fallback frontend server is listening on port 5174
+- Backend health endpoint is reachable on port 5000
+- Socket.IO polling handshake succeeds and CORS allows the frontend origin
+
+Optional environment overrides:
+
+```bash
+BACKEND_URL=http://127.0.0.1:5000 FRONTEND_PORT=5173 FRONTEND_ORIGIN=http://localhost:5173 bash scripts/dev_startup_checks.sh
+```
 
 ## Using Real Telemetry
 
